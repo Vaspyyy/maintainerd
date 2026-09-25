@@ -1,4 +1,4 @@
-# Milestone 0 validation
+# Milestone 1 validation
 
 ## Exercised locally
 
@@ -17,7 +17,8 @@ Covered cases include:
 - Timeout termination of a descendant process, interruption records and stale-record recovery.
 - Global run-start budgets, pause behavior and locking.
 - Worktree integrity failures retained for inspection, unchanged user edits, disabled push URLs and cleanup warnings.
-- GET-only GitHub access, unavailable context, response caps and truncation disclosure.
+- GET-only model-context GitHub access, unavailable context, response caps and truncation disclosure.
+- Proposal issue rendering, one-proposal report limits, idempotent local publication records, crash-marker recovery and duplicate-title refusal use mocked GitHub App boundaries.
 
 Source compilation and a built-wheel/CLI smoke check are also part of the local validation procedure. The GitHub CI workflow runs the offline suite on Python 3.11 and 3.13.
 
@@ -26,7 +27,8 @@ Source compilation and a built-wheel/CLI smoke check are also part of the local 
 - A real logged-in Codex model invocation or actual subscription accounting.
 - Linux sandbox enforcement on the user's machine.
 - Live private-repository Git credentials or the user's local gh login.
-- A live GitHub bot identity, posting, webhook delivery, code implementation, or PR creation. Those are not implemented in this milestone.
+- A live GitHub App installation or real issue publication from the test environment.
+- Webhook delivery, comment replies, code implementation, branch pushes or PR creation. Those are not implemented in this milestone.
 
 ## Installation-side acceptance check
 
@@ -34,7 +36,8 @@ Source compilation and a built-wheel/CLI smoke check are also part of the local 
 2. Register the target repository and create a contributor.
 3. Run `maintainerd wake mira --dry-run` and review context.json/prompt.txt.
 4. Run `maintainerd wake mira`, then `maintainerd show latest`.
-5. Confirm the report cites actual SDK files, acknowledges incomplete context, proposes only useful work, and does not claim tests or GitHub writes occurred.
-6. Run it again after adding human guidance or a new upstream commit and assess whether continuity is useful.
+5. Confirm the report cites actual SDK files, acknowledges incomplete context, and proposes only useful work.
+6. Configure a repository-scoped GitHub App, keep `publish_proposals=false`, run `maintainerd doctor`, then explicitly publish a known-good report with `maintainerd publish RUN_ID`.
+7. Only after reviewing that public issue should `publish_proposals=true` be enabled for autonomous proposal creation.
 
-Passing the controller tests proves mechanics, not good autonomous judgment. Evaluate that with actual reports before granting a GitHub write capability.
+Passing the controller tests proves mechanics, not good autonomous judgment. Proposal publishing should be disabled again if public issue quality degrades.

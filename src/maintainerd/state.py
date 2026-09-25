@@ -44,6 +44,10 @@ codex_binary = "codex"
 timeout_seconds = 900
 max_runs_per_day = 4
 include_github = true
+publish_proposals = false
+# GitHub App identity used only by the trusted host-side proposal publisher.
+# github_app_id = 123456
+# github_private_key_path = "/home/you/.config/maintainerd/mira.private-key.pem"
 # Optional: use a model available in your Codex subscription.
 # model = "your-model-id"
 '''
@@ -55,6 +59,9 @@ class Config:
     timeout_seconds: int = 900
     max_runs_per_day: int = 4
     include_github: bool = True
+    publish_proposals: bool = False
+    github_app_id: int | None = None
+    github_private_key_path: str | None = None
     model: str | None = None
 
     @classmethod
@@ -73,6 +80,22 @@ class Config:
                 raise Error(f"{key} must be an integer between 1 and {maximum}.")
         if type(config.include_github) is not bool:
             raise Error("include_github must be true or false.")
+        if type(config.publish_proposals) is not bool:
+            raise Error("publish_proposals must be true or false.")
+        if config.github_app_id is not None and (
+            type(config.github_app_id) is not int or config.github_app_id <= 0
+        ):
+            raise Error("github_app_id must be a positive integer.")
+        if config.github_private_key_path is not None and (
+            not isinstance(config.github_private_key_path, str)
+            or not config.github_private_key_path.strip()
+            or "\n" in config.github_private_key_path
+        ):
+            raise Error("github_private_key_path must be a nonempty path string.")
+        if (config.github_app_id is None) != (config.github_private_key_path is None):
+            raise Error("Configure github_app_id and github_private_key_path together.")
+        if config.publish_proposals and config.github_app_id is None:
+            raise Error("publish_proposals requires a configured GitHub App identity.")
         for key in ("codex_binary", "model"):
             value = getattr(config, key)
             if value is None and key == "model":
@@ -102,7 +125,7 @@ class State:
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=WAL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             self.db.close()
             raise Error(f"State schema {version} is newer than this maintainerd supports.")
         self.db.executescript('''
@@ -124,7 +147,19 @@ class State:
                 id INTEGER PRIMARY KEY, maintainer TEXT NOT NULL REFERENCES maintainers(name),
                 body TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL
             );
-            PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS proposal_publications (
+                id INTEGER PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id),
+                finding_index INTEGER NOT NULL,
+                repository TEXT NOT NULL,
+                issue_number INTEGER NOT NULL,
+                issue_url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                published_at TEXT NOT NULL,
+                UNIQUE(run_id, finding_index),
+                UNIQUE(repository, issue_number)
+            );
+            PRAGMA user_version=2;
         ''')
 
     def close(self) -> None:

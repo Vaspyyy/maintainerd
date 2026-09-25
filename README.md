@@ -2,11 +2,11 @@
 
 **A small daemon that turns a subscription-authenticated coding CLI into a persistent software contributor.**
 
-No manager agent, fixed developer roles, API billing integration, Redis, database server, or web dashboard. Just Python, SQLite, Git worktrees and Codex CLI. GitHub becomes the shared public workspace in later milestones.
+No manager agent, fixed developer roles, API billing integration, Redis, database server, or web dashboard. Just Python, SQLite, Git worktrees, Codex CLI, and one narrowly scoped GitHub App when proposal publishing is enabled.
 
 ## What works today
 
-Milestone 0 is a runnable **read-only exploration loop**:
+Milestone 1 keeps Codex **read-only** while optionally giving the trusted host controller one public action: create a proposal issue:
 
 ```text
 manual wake or optional interval
@@ -17,12 +17,13 @@ manual wake or optional interval
     -> run Codex with ChatGPT authentication and a read-only sandbox
     -> validate a structured report
     -> save evidence, proposal drafts, limitations and observations
+    -> optionally publish one validated proposal as a GitHub issue
     -> clean up the unchanged worktree and stop
 ```
 
 A run can propose an improvement, identify missing context, or conclude that no action is worthwhile. Producing an issue or PR is not a quota. Speculative features and API changes should become discussions before implementation.
 
-**This version does not open issues, post comments, write code, push branches, or open/merge PRs in managed repositories.** Proposal drafts are local reports. It does not yet process GitHub webhooks. Those capabilities come after the first contributor's judgment has been evaluated.
+Codex itself still cannot write GitHub or repository files. Proposal publication happens only in trusted controller code using a scoped GitHub App. **Milestone 1 does not reply to comments, modify code, push branches, open PRs, merge anything, or process webhooks.** Those capabilities come later.
 
 ## Install
 
@@ -86,6 +87,51 @@ Human notes and agent observations have separate provenance. Only successful, va
 
 By default clean worktrees are removed after a run, while reports and the bare repository remain. Use `wake mira --keep-worktree` to inspect the exact checkout afterward. Dirty worktrees or cleanup failures are retained and recorded; they are not force-deleted.
 
+## Give a maintainer a GitHub issue identity
+
+Keep proposal publishing disabled until you are happy with local reports. Then create a GitHub App for the maintainer:
+
+1. GitHub **Settings -> Developer settings -> GitHub Apps -> New GitHub App**.
+2. Give it a distinct name such as `mira-maintains`. A homepage URL can point at this repository.
+3. Webhooks are not used yet, so disable **Active** under Webhook.
+4. Repository permissions: **Issues: Read and write**. Metadata read access is automatic. Do not grant Contents, Actions, Administration, Secrets or Pull requests for Milestone 1.
+5. Install the App only on the managed repository, for example `Vaspyyy/hoi4-agent-sdk`.
+6. Generate a private key, move it somewhere outside all repositories, and restrict it:
+
+```sh
+mkdir -p ~/.config/maintainerd
+mv ~/Downloads/*.private-key.pem ~/.config/maintainerd/mira.private-key.pem
+chmod 600 ~/.config/maintainerd/mira.private-key.pem
+```
+
+Copy the numeric **App ID** from the GitHub App settings page. No installation ID is needed; maintainerd resolves the installation for the registered repository.
+
+Edit `~/.local/share/maintainerd/config.toml`:
+
+```toml
+publish_proposals = true
+github_app_id = 123456
+github_private_key_path = "/home/ransom/.config/maintainerd/mira.private-key.pem"
+```
+
+Then verify the exact installation and permission before publishing:
+
+```sh
+.venv/bin/maintainerd doctor
+```
+
+The controller signs a short-lived GitHub App JWT with local `openssl`, exchanges it for an installation token, uses that token only in the host process, and never stores or passes it to Codex.
+
+To publish an existing completed proposal, including a proposal created before Milestone 1:
+
+```sh
+.venv/bin/maintainerd publish latest
+# or:
+.venv/bin/maintainerd publish 38aa1b4f8d1245dc
+```
+
+Publication is idempotent for a run. A crash after GitHub accepts the issue is recovered by the embedded run marker, and an unrelated open issue with the same title blocks automatic duplication. With `publish_proposals = true`, future successful `propose` runs publish automatically after the read-only model process has ended. A publication failure leaves the validated local report intact and records `publication-warning.json`.
+
 ## Subscription-only behavior
 
 The controller requires a positive ChatGPT login status. It removes API keys and other provider credentials from the Codex process environment, enforces `forced_login_method="chatgpt"`, and uses the OpenAI provider. It does not implement an API client or paid API fallback.
@@ -114,6 +160,9 @@ codex_binary = "codex"
 timeout_seconds = 900
 max_runs_per_day = 4
 include_github = true
+publish_proposals = false
+# github_app_id = 123456
+# github_private_key_path = "/home/ransom/.config/maintainerd/mira.private-key.pem"
 # model = "a-model-id-available-in-your-Codex-subscription"
 ```
 
@@ -140,7 +189,7 @@ Pause prevents **new** real runs; it does not cancel one already active. Resume 
 
 ## GitHub context is deliberately bounded
 
-The host's `gh` login fetches data with GET requests only. The model gets a snapshot, not the GitHub credential or a GitHub write tool. The snapshot covers up to 100 open issues/PRs, up to 20 conversation comments on each of the five most recently updated items, and ten recent workflow runs.
+The host's `gh` login fetches model context with GET requests only. The model gets a snapshot, not the GitHub credential or a GitHub write tool. The separate GitHub App credential is used only by the trusted proposal publisher. The snapshot covers up to 100 open issues/PRs, up to 20 conversation comments on each of the five most recently updated items, and ten recent workflow runs.
 
 Limits, unavailable data and truncation are recorded explicitly. Closed proposals, PR diffs, inline reviews and GitHub Discussions are not fetched yet. Missing `gh` or failed authentication produces a code-only inspection with a warning, not a false claim that there are no open issues. This is **not yet exhaustive duplicate detection**.
 
@@ -161,9 +210,9 @@ See [docs/VALIDATION.md](docs/VALIDATION.md) for what was and was not tested dur
 
 ## Next milestones
 
-1. Evaluate real read-only reports and refine initiative, evidence and memory.
-2. Add a GitHub App identity and a narrow broker for proposal issues and replies, with explicit approval state. Silence is not approval.
-3. Add approved-work implementation, tests, branch publication, draft PRs and review follow-up. Human merging remains the default.
+1. Run proposal-only autonomy for a while and evaluate whether public issue quality stays high.
+2. Add GitHub event handling and narrow, thread-owned replies so a human can discuss proposals with the same maintainer identity. Silence is not approval.
+3. Add explicit approval state, then approved-work implementation, tests, branch publication, draft PRs and review follow-up. Human merging remains the default.
 4. Only then add another independent contributor or a second machine.
 
 The contributor's purpose remains the same across milestones: notice useful work, investigate it, discuss when appropriate, and continue over time. The surrounding software should stay small enough to understand.

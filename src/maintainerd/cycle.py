@@ -6,7 +6,7 @@ import json
 import uuid
 from pathlib import Path
 
-from . import codex, github, repo, report
+from . import codex, github, publisher, repo, report
 from .state import Error, State, utcnow, write_json
 
 
@@ -21,10 +21,12 @@ Repository: {repository['name']}
 Wake reason: {reason}
 Mission: {maintainer['mission']}
 
-This is Milestone 0: READ-ONLY EXPLORATION. Think independently even if nobody
-has requested a task. You are not a fixed-role builder, reviewer or manager.
-Your useful output can be a researched feature proposal that waits for the
-human maintainer's opinion. Doing nothing is preferable to manufacturing work.
+This is Milestone 1: READ-ONLY MODEL EXPLORATION. Think independently even if
+nobody has requested a task. You are not a fixed-role builder, reviewer or
+manager. Your useful output can be a researched feature proposal that waits for
+the human maintainer's opinion. Doing nothing is preferable to manufacturing
+work. If host-side proposal publishing is enabled, the controller may publish
+your single validated proposal as a GitHub issue after you stop.
 
 The controller fetched the configured branch into this detached worktree:
 {workspace}
@@ -56,12 +58,15 @@ Safety and scope:
   dated observations that must be verified against current code.
 - New features, public APIs, semantic changes and speculative ideas require
   discussion before implementation. No permission is implied by silence.
-- No GitHub action is available in this milestone. Draft locally only; never
-  describe a proposed issue as actually opened or a local finding as approved.
+- No GitHub action or credential is available to you. The trusted controller,
+  not the model process, may publish a validated proposal after this run.
+  Never describe an issue as opened unless supplied context already proves it.
+- A proposal is not approval to implement. No permission is implied by silence.
 
 Return the final JSON matching the supplied schema. Choose outcome 'propose',
-'no_action', or 'needs_context'. At most two evidence-backed findings, not a
-quota. For each proposal explain the problem, evidence, possible approach,
+'no_action', or 'needs_context'. At most one evidence-backed finding, not a
+quota. Make it suitable for a public issue: explain the problem, evidence,
+possible approach,
 tradeoffs and questions for the human. State limitations honestly, especially
 missing/truncated GitHub context and the fact tests were NOT run. Record only a
 few concise, sourced observations as memory_notes, never invented human policy.
@@ -102,8 +107,10 @@ def wake(state: State, maintainer_name: str, reason: str = "exploration", *, dry
                        "branch": repository["branch"], "recent_commits": history,
                        "github": gh, "memory": state.memories(maintainer_name),
                        "previous_reports": state.recent(maintainer_name),
-                       "controller_limitations": ["Read-only inspection: no tests executed or GitHub writes.",
-                                                  "Only the five latest successful local reports are included."]}
+                       "controller_limitations": [
+                           "Model inspection was read-only: no tests executed or repository files changed.",
+                           "Only the five latest successful local reports are included.",
+                       ]}
             write_json(artifacts / "context.json", context)
             write_json(artifacts / "schema.json", report.SCHEMA)
             prompt = prompt_for(maintainer, repository, workspace, artifacts, reason)
@@ -132,6 +139,15 @@ def wake(state: State, maintainer_name: str, reason: str = "exploration", *, dry
                     if observation.strip():
                         state.db.execute("INSERT INTO notes(maintainer,body,source,created_at) VALUES (?,?,?,?)",
                                          (maintainer_name, observation, f"run:{run_id}", utcnow()))
+            publication = None
+            if result["outcome"] == "propose" and state.config.publish_proposals:
+                try:
+                    publication = publisher.publish_run(state, run_id)
+                except Error as exc:
+                    write_json(artifacts / "publication-warning.json", {"message": str(exc)})
+                    print(f"WARN proposal was not published: {exc}", flush=True)
+            if publication:
+                print(f"Published proposal: {publication['issue_url']}", flush=True)
             print(f"Completed: {result['outcome']}. Report: {artifacts / 'report.md'}", flush=True)
             return run_id
         except BaseException as exc:

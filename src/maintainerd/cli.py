@@ -13,12 +13,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import __version__, codex, cycle, repo
+from . import __version__, codex, cycle, publisher, repo
 from .state import Error, State, default_home, name, utcnow
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="maintainerd", description="Independent maintainer experiments. Milestone 0 is read-only.")
+    root = argparse.ArgumentParser(prog="maintainerd", description="Persistent autonomous maintainer experiments.")
     root.add_argument("--version", action="version", version=__version__)
     root.add_argument("--home", type=Path, default=default_home(), help="Dedicated data directory (or MAINTAINERD_HOME)")
     commands = root.add_subparsers(dest="command", required=True)
@@ -47,6 +47,8 @@ def parser() -> argparse.ArgumentParser:
     show = commands.add_parser("show", help="Print a report and its artifact location")
     show.add_argument("run", nargs="?", default="latest")
     show.add_argument("--json", action="store_true")
+    publish = commands.add_parser("publish", help="Publish one completed proposal report as a GitHub issue")
+    publish.add_argument("run", nargs="?", default="latest")
     memories = commands.add_parser("memory", help="Inspect observations or add explicit human guidance").add_subparsers(dest="action", required=True)
     add_note = memories.add_parser("add")
     add_note.add_argument("name")
@@ -58,7 +60,7 @@ def parser() -> argparse.ArgumentParser:
     forget.add_argument("id", type=int)
     commands.add_parser("pause", help="Prevent new real runs; does not interrupt an active run")
     commands.add_parser("resume", help="Permit new real runs")
-    serve = commands.add_parser("serve", help="Opt-in foreground exploration loop; no GitHub event handling yet")
+    serve = commands.add_parser("serve", help="Opt-in foreground exploration loop; may publish proposals if enabled")
     serve.add_argument("name")
     serve.add_argument("--every-hours", type=float, default=12)
     return root
@@ -66,7 +68,7 @@ def parser() -> argparse.ArgumentParser:
 
 def doctor(state: State) -> int:
     failed = False
-    print(f"Data: {state.home}\nPython: {sys.version.split()[0]}\nMode: read-only, ChatGPT subscription only")
+    print(f"Data: {state.home}\nPython: {sys.version.split()[0]}\nMode: read-only Codex; optional host-side proposal issues")
     try:
         print("PASS " + repo.git(["--version"]).strip())
     except Error as exc:
@@ -85,6 +87,21 @@ def doctor(state: State) -> int:
             print("WARN gh is installed but login was not confirmed; use 'gh auth login'.")
     else:
         print("WARN gh not found; repository inspection works but live issue/PR/CI context will be missing.")
+    if publisher.configured(state.config):
+        repositories = state.rows("SELECT github FROM repositories WHERE github IS NOT NULL ORDER BY name")
+        if repositories:
+            try:
+                print("PASS " + publisher.preflight(state.config, repositories[0]["github"]))
+            except Error as exc:
+                print(f"FAIL {exc}")
+                failed = True
+        else:
+            print("WARN GitHub App configured, but no GitHub repository is registered yet.")
+    elif state.config.publish_proposals:
+        print("FAIL proposal publishing is enabled without a GitHub App identity")
+        failed = True
+    else:
+        print("INFO GitHub proposal publishing disabled; local proposal reports still work.")
     print(f"Remaining run starts today (UTC): {state.remaining()}/{state.config.max_runs_per_day}")
     print("Doctor does not call a model or prove sandbox enforcement. The first wake is the live integration check.")
     print("Use trusted repositories only; the Codex sandbox is not a separate VM or protection from reading your home.")
@@ -177,6 +194,19 @@ def dispatch(args: argparse.Namespace, state: State) -> int:
             else:
                 print(f"Run {run_id}: {item['status']}. {item['error'] or 'No model report was generated.'}")
             print(f"Artifacts: {artifacts}", file=sys.stderr if args.json else sys.stdout)
+        case "publish":
+            run_id = args.run
+            if run_id == "latest":
+                rows = state.rows(
+                    "SELECT id FROM runs WHERE status='completed' AND result IS NOT NULL "
+                    "ORDER BY started_at DESC, rowid DESC LIMIT 1"
+                )
+                if not rows:
+                    raise Error("No completed report exists to publish.")
+                run_id = rows[0]["id"]
+            with state.lock():
+                publication = publisher.publish_run(state, run_id)
+            print(f"Published proposal #{publication['issue_number']}: {publication['issue_url']}")
         case "memory":
             state.one("maintainers", args.name)
             if args.action == "list":

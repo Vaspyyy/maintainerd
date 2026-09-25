@@ -2,7 +2,7 @@
 
 ## What is enforced by this application
 
-The application provides no managed-repository GitHub write or Git push function. All GitHub snapshot requests are explicit GETs. The controller uses its own bare Git copy and detached worktrees, disables ordinary pushes in that copy, and never runs Git commands in a registered source checkout.
+The Codex process receives no managed-repository GitHub write or Git push function. Snapshot requests made for model context are explicit GETs. Milestone 1 adds one narrow host-side write: the trusted controller may create a proposal issue through a scoped GitHub App after a validated `propose` report. The GitHub App private key and short-lived installation token never enter the Codex environment. The controller uses its own bare Git copy and detached worktrees, disables ordinary pushes in that copy, and never runs Git commands in a registered source checkout.
 
 Codex receives a read-only sandbox request, approval_policy=never, disabled hosted web search, and disabled apps, plugins, hooks, subagents, goals and built-in memory features. User config and execution-policy rules are ignored. It starts in a fresh controller directory outside the target tree, so target-local .codex configuration is not selected as the starting configuration. Missing required CLI flags fail preflight. Unknown settings fail strict configuration parsing instead of being silently accepted.
 
@@ -22,7 +22,7 @@ System/organization-managed Codex settings and future CLI changes may affect beh
 
 Disabling a remote push URL is defense in depth, not Git authorization: a process with unrestricted network access could use another URL. Worktrees also share their controller-owned object database. They isolate normal work, not malicious code. The read-only sandbox and disabled integrations are essential to the prototype's intended limits.
 
-Repository text, AGENTS files, comments and previous model notes may contain prompt injection. The prompt treats them as evidence, not authority, but prompt wording is not a security boundary. Model-generated reports can also be wrong, contain unsafe suggestions, or expose sensitive code. Review them before publishing.
+Repository text, AGENTS files, comments and previous model notes may contain prompt injection. The prompt treats them as evidence, not authority, but prompt wording is not a security boundary. Model-generated reports can also be wrong, contain unsafe suggestions, or expose sensitive code. Automatic proposal publishing therefore has a real public-output risk: enable it only after reviewing local reports, keep the GitHub App scoped to the intended repository, and disable `publish_proposals` if judgment quality degrades.
 
 The daily launch budget is per local data directory. It cannot measure or limit all activity on your ChatGPT account. It does not control subscription overage/credit settings. A running model can consume significant allowance before a timeout. Do not interpret token counters as accurate subscription-limit accounting.
 
@@ -34,6 +34,8 @@ Normal clean worktrees are removed. Dirty worktrees, hard-kill residue and clean
 
 Pause stops new starts, not an active run. Use Ctrl+C for a foreground run. Do not run multiple daemon instances against separate homes expecting one shared quota or coordination system.
 
-## Before enabling writes in a later milestone
+## Current write boundary and later milestones
 
-Add brokered short-lived GitHub App credentials outside the execution environment, a stronger filesystem/OS boundary, protected target branches, approval records that only authorized humans can grant, and idempotent GitHub actions. Workflows, secrets, permissions and bot policy changes must need human approval. Publishing and merging must never be inferred from an encouraging comment or from another agent's approval.
+Proposal issue creation is idempotent per run and finding, and the host checks for a matching open title before creating a new issue. The private key should be mode 0600 and stored outside repositories. The App needs only Metadata read and Issues read/write for this milestone.
+
+Before enabling comment replies or code writes, add explicit human-approval records, webhook/event ownership, stronger filesystem/OS isolation for write-capable execution, protected target branches, and idempotent branch/PR actions. Workflows, secrets, permissions and bot policy changes must remain human-controlled. Publishing code or merging must never be inferred from silence, an encouraging comment, or another agent's approval.

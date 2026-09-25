@@ -3,7 +3,7 @@
 This is a small, Linux-first autonomous-maintainer runtime. Keep it understandable.
 
 - The target is independent, persistent contributors, not a manager/builder/reviewer hierarchy.
-- V0.1 is READ-ONLY in managed repositories. Do not quietly introduce GitHub writes, workspace-write execution, API billing, auto-merging, or automatic startup.
+- Codex remains READ-ONLY in managed repositories. Milestone 1 permits only host-brokered proposal issue creation through a scoped GitHub App. Do not quietly introduce comment replies, code writes, pushes, PR creation, API billing, auto-merging, or automatic startup.
 - Codex authentication must remain subscription-backed. Do not read, copy or print auth.json, API keys, token-bearing URLs or private keys. No billing fallback.
 - Application memory is sourced and bounded. A model observation is not a human decision. Silence is not approval.
 - Do not force a feature/issue/PR quota. A well-reasoned no_action is a valid outcome.

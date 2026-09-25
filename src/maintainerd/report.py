@@ -23,7 +23,7 @@ SCHEMA = {
     "properties": {
         "outcome": {"type": "string", "enum": ["propose", "no_action", "needs_context"]},
         "summary": TEXT,
-        "findings": {"type": "array", "items": FINDING, "maxItems": 2},
+        "findings": {"type": "array", "items": FINDING, "maxItems": 1},
         "inspected_paths": STRINGS, "limitations": STRINGS,
         "memory_notes": {**STRINGS, "maxItems": 5},
     },
@@ -67,10 +67,22 @@ def parse(raw: str) -> dict:
     return result
 
 
-def markdown(result: dict, run_id: str, sha: str, limitations: list[str]) -> str:
+def markdown(
+    result: dict,
+    run_id: str,
+    sha: str,
+    limitations: list[str],
+    publications: list[dict] | None = None,
+) -> str:
+    publications = publications or []
     lines = [f"# Maintenance report {run_id}", "", f"Outcome: **{result['outcome']}**",
-             f"Commit inspected: `{sha}`", "", result["summary"], "",
-             "**Local report only. No issue, comment, branch or PR was published.**", ""]
+             f"Commit inspected: `{sha}`", "", result["summary"], ""]
+    if publications:
+        lines.extend(["**Published proposal:**", ""])
+        lines.extend(f"- #{item['issue_number']}: {item['issue_url']}" for item in publications)
+        lines.extend(["", "**No code, branch or PR was published.**", ""])
+    else:
+        lines.extend(["**Local report only. No issue, comment, branch or PR was published.**", ""])
     for finding in result["findings"]:
         lines.extend([f"## {finding['title']}", "", finding["problem"], "", "### Evidence", ""])
         lines.extend(f"- {item}" for item in finding["evidence"])
