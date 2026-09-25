@@ -399,6 +399,15 @@ def publish_run(state: State, run_id: str) -> dict:
                 f"This maintainer already has an overlapping open thread at #{number} "
                 f"(similarity {score:.2f}); no duplicate comment was posted."
             )
+        overlap_marker = f"<!-- maintainerd overlap-run={run_id} finding=0 -->"
+        thread = issue_thread(active, number)
+        for comment in thread["comments"]:
+            if overlap_marker in (comment.get("body") or ""):
+                route = _record_route(
+                    state, run_id, target, item, title, "joined", comment.get("id")
+                )
+                _refresh_report(state, run)
+                return route
         created_comment = post_comment(
             active,
             number,

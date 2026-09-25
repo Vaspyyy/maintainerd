@@ -146,10 +146,12 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(publication["mode"], "created")
         self.assertEqual(api.call_count, 1)
 
+    @patch("maintainerd.publisher.issue_thread")
     @patch("maintainerd.publisher.session")
     @patch("maintainerd.publisher._api")
-    def test_overlap_joins_existing_human_thread_instead_of_opening_duplicate(self, api, session):
+    def test_overlap_joins_existing_human_thread_instead_of_opening_duplicate(self, api, session, issue_thread):
         session.return_value = self.active()
+        issue_thread.return_value = {"issue": {}, "comments": []}
         existing = {
             "number": 2,
             "title": "Reject duplicate focus IDs before installing an inherited tree",
@@ -166,6 +168,34 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(publication["mode"], "joined")
         self.assertEqual(publication["comment_id"], 88)
         self.assertEqual(api.call_args_list[1].args[1], "/repos/owner/repo/issues/2/comments")
+
+    @patch("maintainerd.publisher.issue_thread")
+    @patch("maintainerd.publisher.session")
+    @patch("maintainerd.publisher._api")
+    def test_overlap_marker_recovers_after_remote_comment_before_local_record(
+        self, api, session, issue_thread
+    ):
+        session.return_value = self.active()
+        existing = {
+            "number": 2,
+            "title": "Reject duplicate focus IDs before installing an inherited tree",
+            "state": "open",
+            "body": "Human report about inherited duplicate focuses in src/hoi4/mod.py.",
+            "html_url": "https://github.com/owner/repo/issues/2",
+        }
+        api.return_value = [existing]
+        issue_thread.return_value = {
+            "issue": existing,
+            "comments": [{
+                "id": 91,
+                "body": "<!-- maintainerd overlap-run=run1 finding=0 -->\nRecovered",
+                "html_url": "https://github.com/owner/repo/issues/2#issuecomment-91",
+            }],
+        }
+        publication = publisher.publish_run(self.state, "run1")
+        self.assertEqual(publication["mode"], "joined")
+        self.assertEqual(publication["comment_id"], 91)
+        self.assertEqual(api.call_count, 1)
 
     @patch("maintainerd.publisher.session")
     @patch("maintainerd.publisher._api")
