@@ -6,7 +6,7 @@ No manager agent, fixed developer roles, API billing integration, Redis, databas
 
 ## What works today
 
-Milestone 1 keeps Codex **read-only** while optionally giving the trusted host controller one public action: create a proposal issue:
+Milestone 2 keeps Codex **read-only** while the trusted host controller can create proposal issues, route overlapping discoveries into existing threads, listen for new comments, and post validated discussion replies:
 
 ```text
 manual wake or optional interval
@@ -17,13 +17,16 @@ manual wake or optional interval
     -> run Codex with ChatGPT authentication and a read-only sandbox
     -> validate a structured report
     -> save evidence, proposal drafts, limitations and observations
-    -> optionally publish one validated proposal as a GitHub issue
-    -> clean up the unchanged worktree and stop
+    -> create a new issue OR join a strongly overlapping existing thread
+    -> poll owned/joined threads for new human or bot comments
+    -> wake the same maintainer for a read-only discussion turn when useful
+    -> post at most one validated reply
+    -> clean up unchanged worktrees and stop
 ```
 
 A run can propose an improvement, identify missing context, or conclude that no action is worthwhile. Producing an issue or PR is not a quota. Speculative features and API changes should become discussions before implementation.
 
-Codex itself still cannot write GitHub or repository files. Proposal publication happens only in trusted controller code using a scoped GitHub App. **Milestone 1 does not reply to comments, modify code, push branches, open PRs, merge anything, or process webhooks.** Those capabilities come later.
+Codex itself still cannot write GitHub or repository files. GitHub writes happen only in trusted controller code using a scoped GitHub App. **Milestone 2 can create issues and top-level issue/PR conversation comments, but still cannot modify code, push branches, open PRs, merge anything, or change repository settings.** Polling is used instead of webhooks so no public listener is required.
 
 ## Install
 
@@ -130,7 +133,25 @@ To publish an existing completed proposal, including a proposal created before M
 .venv/bin/maintainerd publish 38aa1b4f8d1245dc
 ```
 
-Publication is idempotent for a run. A crash after GitHub accepts the issue is recovered by the embedded run marker, and an unrelated open issue with the same title blocks automatic duplication. With `publish_proposals = true`, future successful `propose` runs publish automatically after the read-only model process has ended. A publication failure leaves the validated local report intact and records `publication-warning.json`.
+Publication is idempotent for a run. A crash after GitHub accepts the issue is recovered by the embedded run marker. Before opening a new issue, maintainerd compares the proposal against the 100 most recently updated GitHub issues/PRs. Strong overlap with an open thread routes the independent finding into that existing discussion instead of opening a duplicate. Strong overlap with a closed item stops automatic publication so an old decision is not silently reopened. If the same maintainer already owns the overlapping open thread, no duplicate comment is posted.
+
+This deterministic similarity gate is deliberately conservative, not magical semantic search. The exploration prompt also receives open items plus recent closed items and is expected to notice overlap itself. Independent rediscovery is useful; duplicate publication is what gets suppressed.
+
+With `publish_proposals = true`, future successful `propose` runs route automatically after the read-only model process has ended. A publication failure leaves the validated local report intact and records `publication-warning.json`.
+
+## Discussion inbox
+
+Once a proposal is created or joined, maintainerd remembers that thread. Check for new comments manually with:
+
+```sh
+.venv/bin/maintainerd inbox mira
+```
+
+Human comments and comments from **other bots** are both valid inputs. Only the maintainer's own GitHub App comments are ignored, which prevents self-trigger loops. Multiple new comments on one thread are handled in one Codex turn.
+
+A reply is allowed only when the model's structured result identifies concrete progress such as new evidence, a code location, counterexample, correction, design alternative, synthesis, or concrete decision/question. Pure agreement and repetition should result in `no_reply`. Bot-to-bot discussion is intentionally allowed; a long bot-only streak merely raises the bar for adding another comment.
+
+Discussion turns use a fresh current repository snapshot and the complete fetched issue thread. They consume the same local daily Codex-run budget as exploration turns. No comment is marked processed until the turn completes successfully, so failures do not silently lose maintainer input.
 
 ## Subscription-only behavior
 
@@ -151,6 +172,7 @@ The first command creates:
     repos/
     workspaces/
     runs/
+    threads/
 ```
 
 `XDG_DATA_HOME` is respected. Override the directory with `MAINTAINERD_HOME` or the global `--home PATH` option, placed before the subcommand. State and logs are private application data, not repository files. The CLI uses a restrictive umask.
@@ -168,17 +190,19 @@ publish_proposals = false
 
 The model is deliberately not hardcoded. With `model` omitted, Codex chooses its default; it does **not** inherit a model selection from your ignored personal `config.toml`. Use this application configuration to make the choice explicit. Unknown configuration keys are rejected, including API-key settings.
 
-The daily budget counts actual Codex launch attempts, including failed launches, across all contributors in this data directory. It resets at midnight UTC. Doctor checks and dry runs do not consume it. The 15-minute timeout covers the Codex invocation; Git and GitHub preparation have their own shorter timeouts.
+The daily budget counts actual Codex launch attempts, including failed exploration and discussion turns, across all contributors in this data directory. It resets at midnight UTC. Doctor checks, inbox polls with nothing to answer, and dry runs do not consume it. The 15-minute timeout covers each Codex invocation; Git and GitHub preparation have their own shorter timeouts.
 
-## Optional automatic exploration
+## Continuous foreground operation
 
-After reviewing a few manual runs, the same finite cycle can run on a timer even when no GitHub activity occurs:
+After manual checks, one simple loop can handle both proactive exploration and reactive discussion:
 
 ```sh
-.venv/bin/maintainerd serve mira --every-hours 12
+.venv/bin/maintainerd serve mira --every-hours 12 --poll-seconds 300
 ```
 
-This runs in the foreground. If no previous real run exists, the first inspection is immediate. Otherwise its next due time is based on the last recorded attempt, so restarting the process does not immediately spend another run. The loop stops on runtime errors rather than repeatedly consuming allowance. Ctrl+C stops the loop and terminates an active Codex process group.
+Every five minutes it checks the GitHub threads Mira created or joined. Polls with no new external comments cost no Codex usage. Independently, Mira receives a proactive exploration wake every twelve hours even when nothing happened on GitHub.
+
+This runs in the foreground. If no previous exploration exists, the first inspection is immediate. Otherwise the next exploration is based on the last recorded attempt, so restarting does not immediately spend another run. Runtime errors stop the loop instead of retry-burning allowance. Ctrl+C stops the loop and terminates an active Codex process group. Nothing installs itself into systemd yet.
 
 ```sh
 .venv/bin/maintainerd pause
@@ -189,9 +213,9 @@ Pause prevents **new** real runs; it does not cancel one already active. Resume 
 
 ## GitHub context is deliberately bounded
 
-The host's `gh` login fetches model context with GET requests only. The model gets a snapshot, not the GitHub credential or a GitHub write tool. The separate GitHub App credential is used only by the trusted proposal publisher. The snapshot covers up to 100 open issues/PRs, up to 20 conversation comments on each of the five most recently updated items, and ten recent workflow runs.
+The host's `gh` login fetches exploration context with GET requests only. The model gets a snapshot, not the GitHub credential or a GitHub write tool. The separate GitHub App credential is used only by trusted host-side publishing and discussion code. The exploration snapshot covers up to 100 open issues/PRs, comments on the five most recently updated open items, 30 recently closed issues/PRs, and ten recent workflow runs.
 
-Limits, unavailable data and truncation are recorded explicitly. Closed proposals, PR diffs, inline reviews and GitHub Discussions are not fetched yet. Missing `gh` or failed authentication produces a code-only inspection with a warning, not a false claim that there are no open issues. This is **not yet exhaustive duplicate detection**.
+Limits, unavailable data and truncation are recorded explicitly. PR diffs, inline reviews, older closed history and GitHub Discussions are still incomplete. Missing `gh` or failed authentication produces a code-only inspection with a warning, not a false claim that there are no existing discussions.
 
 ## Safety boundary
 
@@ -208,11 +232,22 @@ The suite uses actual local Git repositories, SQLite and subprocesses, with a fa
 
 See [docs/VALIDATION.md](docs/VALIDATION.md) for what was and was not tested during implementation.
 
+## Coordination rules
+
+The coordination model stays deliberately small:
+
+1. **Ideas are not exclusive.** Independent maintainers may rediscover the same problem or disagree in the same thread.
+2. **Publication is deduplicated.** Strongly overlapping discoveries join an existing open issue/PR instead of creating another one.
+3. **Discussion is open.** Human-to-bot and bot-to-bot engineering conversation are both valid; only self-comments are ignored.
+4. **Implementation will be claimed.** When code-writing arrives, one maintainer will hold the active implementation lease for an issue unless parallel implementations are explicitly requested.
+
+No manager agent allocates work and no component assigns permanent subsystems to maintainers.
+
 ## Next milestones
 
-1. Run proposal-only autonomy for a while and evaluate whether public issue quality stays high.
-2. Add GitHub event handling and narrow, thread-owned replies so a human can discuss proposals with the same maintainer identity. Silence is not approval.
-3. Add explicit approval state, then approved-work implementation, tests, branch publication, draft PRs and review follow-up. Human merging remains the default.
-4. Only then add another independent contributor or a second machine.
+1. Add explicit human approval state to proposal threads.
+2. Add approved-work implementation in isolated task worktrees, tests, branch publication and draft PRs. One implementation lease per issue; other maintainers may still discuss and review.
+3. Add PR review/revision loops while keeping human merging as the default.
+4. Then add a second independent maintainer identity and optionally another machine.
 
 The contributor's purpose remains the same across milestones: notice useful work, investigate it, discuss when appropriate, and continue over time. The surrounding software should stay small enough to understand.

@@ -41,7 +41,7 @@ it. In particular, distinguish SDK development from USING an SDK to edit mods.
 Explore purposefully. Start with the project map, recent work and your existing
 observations, then investigate areas that look promising. Follow real user
 workflows. Check whether a capability already exists under another name and
-whether an open issue, PR or previous local proposal overlaps it. Prefer depth
+whether an open issue, PR, recent closed decision, or previous local proposal overlaps it. Prefer depth
 on one meaningful opportunity to a superficial list. Do not claim you read the
 entire codebase. Point to concrete paths and symbols or relevant issue numbers.
 
@@ -148,7 +148,11 @@ def wake(state: State, maintainer_name: str, reason: str = "exploration", *, dry
                     write_json(artifacts / "publication-warning.json", {"message": str(exc)})
                     print(f"WARN proposal was not published: {exc}", flush=True)
             if publication:
-                print(f"Published proposal: {publication['issue_url']}", flush=True)
+                print(
+                    f"Routed proposal ({publication.get('mode', 'created')}): "
+                    f"{publication['issue_url']}",
+                    flush=True,
+                )
             print(f"Completed: {result['outcome']}. Report: {artifacts / 'report.md'}", flush=True)
             return run_id
         except BaseException as exc:

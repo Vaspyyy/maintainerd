@@ -111,7 +111,7 @@ class State:
         if self.home in (Path("/"), Path.home().resolve()):
             raise Error("Use a dedicated maintainerd data directory, not your home or filesystem root.")
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for subdirectory in ("repos", "runs", "workspaces"):
+        for subdirectory in ("repos", "runs", "threads", "workspaces"):
             (self.home / subdirectory).mkdir(exist_ok=True, mode=0o700)
         config_path = self.home / "config.toml"
         try:
@@ -125,7 +125,7 @@ class State:
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=WAL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, 3):
             self.db.close()
             raise Error(f"State schema {version} is newer than this maintainerd supports.")
         self.db.executescript('''
@@ -159,7 +159,58 @@ class State:
                 UNIQUE(run_id, finding_index),
                 UNIQUE(repository, issue_number)
             );
-            PRAGMA user_version=2;
+            CREATE TABLE IF NOT EXISTS proposal_routes (
+                id INTEGER PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id),
+                finding_index INTEGER NOT NULL,
+                repository TEXT NOT NULL,
+                issue_number INTEGER NOT NULL,
+                issue_url TEXT NOT NULL,
+                title TEXT NOT NULL,
+                mode TEXT NOT NULL CHECK(mode IN ('created','joined')),
+                comment_id INTEGER,
+                published_at TEXT NOT NULL,
+                UNIQUE(run_id, finding_index)
+            );
+            CREATE TABLE IF NOT EXISTS thread_events (
+                id INTEGER PRIMARY KEY,
+                maintainer TEXT NOT NULL REFERENCES maintainers(name),
+                repository TEXT NOT NULL,
+                issue_number INTEGER NOT NULL,
+                comment_id INTEGER NOT NULL,
+                author TEXT NOT NULL,
+                author_type TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','processed','ignored')),
+                processed_at TEXT,
+                turn_id TEXT,
+                UNIQUE(maintainer, repository, comment_id)
+            );
+            CREATE TABLE IF NOT EXISTS thread_turns (
+                id TEXT PRIMARY KEY,
+                maintainer TEXT NOT NULL REFERENCES maintainers(name),
+                repository TEXT NOT NULL,
+                issue_number INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                commit_sha TEXT,
+                trigger_comment_ids TEXT NOT NULL,
+                result TEXT,
+                error TEXT,
+                usage TEXT,
+                invoked INTEGER NOT NULL DEFAULT 0,
+                reply_comment_id INTEGER,
+                reply_url TEXT
+            );
+            INSERT OR IGNORE INTO proposal_routes(
+                run_id,finding_index,repository,issue_number,issue_url,title,mode,comment_id,published_at
+            )
+            SELECT run_id,finding_index,repository,issue_number,issue_url,title,'created',NULL,published_at
+            FROM proposal_publications;
+            PRAGMA user_version=3;
         ''')
 
     def close(self) -> None:
@@ -209,11 +260,15 @@ class State:
         return result
 
     def remaining(self) -> int:
-        used = self.db.execute(
+        used_runs = self.db.execute(
             "SELECT count(*) FROM runs WHERE invoked=1 AND substr(started_at,1,10)=?",
             (utcnow()[:10],),
         ).fetchone()[0]
-        return max(0, self.config.max_runs_per_day - used)
+        used_threads = self.db.execute(
+            "SELECT count(*) FROM thread_turns WHERE invoked=1 AND substr(started_at,1,10)=?",
+            (utcnow()[:10],),
+        ).fetchone()[0]
+        return max(0, self.config.max_runs_per_day - used_runs - used_threads)
 
 
 def default_home() -> Path:

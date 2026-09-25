@@ -12,7 +12,7 @@ from .state import Error, utcnow
 
 def snapshot(repository: str | None, enabled: bool) -> dict:
     data = {"repository": repository, "captured_at": utcnow(), "open_items": [],
-            "workflow_runs": [], "limitations": []}
+            "recent_closed_items": [], "workflow_runs": [], "limitations": []}
     limitations = data["limitations"]
     if not enabled or not repository:
         limitations.append("GitHub context disabled or no GitHub repository configured. Duplicate checks are incomplete.")
@@ -61,8 +61,27 @@ def snapshot(repository: str | None, enabled: bool) -> dict:
                 limitations.append(f"Comments on #{entry['number']} capped at the first 20; recent replies may be missing.")
             if any(len(item.get("body") or "") > 8000 for item in comments):
                 limitations.append(f"Some comments on #{entry['number']} were truncated at 8000 characters.")
+        closed = get(f"repos/{repository}/issues?state=closed&sort=updated&direction=desc&per_page=30")
+        if not isinstance(closed, list):
+            raise Error("GitHub closed-items response was not a list.")
+        data["recent_closed_items"] = [
+            {
+                "number": item.get("number"),
+                "title": item.get("title"),
+                "html_url": item.get("html_url"),
+                "updated_at": item.get("updated_at"),
+                "closed_at": item.get("closed_at"),
+                "kind": "pull_request" if "pull_request" in item else "issue",
+                "author": (item.get("user") or {}).get("login"),
+                "body": (item.get("body") or "")[:8000],
+                "labels": [label.get("name") for label in item.get("labels", [])],
+            }
+            for item in closed
+        ]
+        if len(closed) == 30:
+            limitations.append("Recent closed items capped at 30; older decisions may be missing.")
         limitations.append("Conversation comments sampled for the five most recently updated open items only. "
-                           "Closed proposals, PR diffs, inline reviews and GitHub Discussions are not included.")
+                           "PR diffs, inline reviews and GitHub Discussions are not included.")
     except Error as exc:
         limitations.append(f"Issue/PR snapshot incomplete: {exc}")
     try:

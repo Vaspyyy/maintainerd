@@ -313,9 +313,11 @@ class CycleTests(Fixture):
         self.assertEqual(self.executions(), [])
 
     def test_foreground_loop_stops_on_runtime_failure(self):
-        with contextlib.redirect_stdout(io.StringIO()), patch("maintainerd.cycle.wake", side_effect=Error("stop")) as wake:
+        with contextlib.redirect_stdout(io.StringIO()), \
+                patch("maintainerd.discussion.sync_once", return_value=0), \
+                patch("maintainerd.cycle.wake", side_effect=Error("stop")) as wake:
             with self.assertRaisesRegex(Error, "stop"):
-                cli.serve(self.state, "mira", 12)
+                cli.serve(self.state, "mira", 12, 300)
         self.assertEqual(wake.call_count, 1)
 
 
@@ -440,7 +442,7 @@ class GithubTests(unittest.TestCase):
         with patch("maintainerd.github.shutil.which", return_value="/gh"), patch("maintainerd.github.command", side_effect=response) as command:
             data = github.snapshot("a/b", True)
         self.assertEqual(data["open_items"][0]["title"], "Idea")
-        self.assertEqual(command.call_count, 3)
+        self.assertEqual(command.call_count, 4)
         self.assertIn("inline reviews", " ".join(data["limitations"]))
 
     def test_api_failure_is_not_no_open_issues_claim(self):

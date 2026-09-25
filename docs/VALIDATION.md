@@ -1,4 +1,4 @@
-# Milestone 1 validation
+# Milestone 2 validation
 
 ## Exercised locally
 
@@ -18,7 +18,8 @@ Covered cases include:
 - Global run-start budgets, pause behavior and locking.
 - Worktree integrity failures retained for inspection, unchanged user edits, disabled push URLs and cleanup warnings.
 - GET-only model-context GitHub access, unavailable context, response caps and truncation disclosure.
-- Proposal issue rendering, one-proposal report limits, idempotent local publication records, crash-marker recovery and duplicate-title refusal use mocked GitHub App boundaries.
+- Proposal issue rendering, one-proposal report limits, idempotent local routing records, crash-marker recovery, deterministic overlap scoring, join-existing behavior, same-maintainer duplicate suppression and closed-history refusal use mocked GitHub App boundaries.
+- Discussion contracts require concrete progress for replies, accept other bot comments, ignore self-comments, persist thread events/turns, post validated replies, preserve no_reply behavior and charge discussion turns against the same local run budget.
 
 Source compilation and a built-wheel/CLI smoke check are also part of the local validation procedure. The GitHub CI workflow runs the offline suite on Python 3.11 and 3.13.
 
@@ -28,7 +29,8 @@ Source compilation and a built-wheel/CLI smoke check are also part of the local 
 - Linux sandbox enforcement on the user's machine.
 - Live private-repository Git credentials or the user's local gh login.
 - A live GitHub App installation or real issue publication from the test environment.
-- Webhook delivery, comment replies, code implementation, branch pushes or PR creation. Those are not implemented in this milestone.
+- Live GitHub discussion polling/replies from the test environment; those boundaries are mocked.
+- Webhook delivery, code implementation, branch pushes or PR creation. Webhooks are intentionally not needed for this milestone because foreground polling is implemented.
 
 ## Installation-side acceptance check
 
@@ -39,5 +41,7 @@ Source compilation and a built-wheel/CLI smoke check are also part of the local 
 5. Confirm the report cites actual SDK files, acknowledges incomplete context, and proposes only useful work.
 6. Configure a repository-scoped GitHub App, keep `publish_proposals=false`, run `maintainerd doctor`, then explicitly publish a known-good report with `maintainerd publish RUN_ID`.
 7. Only after reviewing that public issue should `publish_proposals=true` be enabled for autonomous proposal creation.
+8. Add a normal comment to a maintainer-created issue and run `maintainerd inbox mira`. Confirm a useful comment receives one bot reply and a trivial/self comment does not create a loop.
+9. Run `maintainerd serve mira --every-hours 12 --poll-seconds 300` and confirm empty polls spend no Codex runs.
 
-Passing the controller tests proves mechanics, not good autonomous judgment. Proposal publishing should be disabled again if public issue quality degrades.
+Passing the controller tests proves mechanics, not good autonomous judgment. Stop autonomous publishing/replies if public discussion quality degrades.

@@ -78,8 +78,10 @@ def markdown(
     lines = [f"# Maintenance report {run_id}", "", f"Outcome: **{result['outcome']}**",
              f"Commit inspected: `{sha}`", "", result["summary"], ""]
     if publications:
-        lines.extend(["**Published proposal:**", ""])
-        lines.extend(f"- #{item['issue_number']}: {item['issue_url']}" for item in publications)
+        lines.extend(["**Proposal routed to GitHub:**", ""])
+        for item in publications:
+            verb = "created" if item.get("mode") == "created" else "joined"
+            lines.append(f"- {verb} #{item['issue_number']}: {item['issue_url']}")
         lines.extend(["", "**No code, branch or PR was published.**", ""])
     else:
         lines.extend(["**Local report only. No issue, comment, branch or PR was published.**", ""])

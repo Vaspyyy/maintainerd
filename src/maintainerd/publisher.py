@@ -1,6 +1,6 @@
-"""Trusted host-side GitHub proposal publisher.
+"""Trusted host-side GitHub publishing and coordination.
 
-The Codex process never receives these credentials or a GitHub write tool.
+Codex never receives GitHub credentials or a GitHub write tool.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ import re
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -21,6 +23,24 @@ from .state import Config, Error, State, utcnow, write_json
 
 API = "https://api.github.com"
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+WORD = re.compile(r"[A-Za-z][A-Za-z0-9_./:-]{2,}")
+PATH = re.compile(r"(?:src|tests|docs|examples)/[A-Za-z0-9_./-]+")
+_SESSION_CACHE: dict[tuple[object, ...], tuple[float, "Session"]] = {}
+
+STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "into", "when", "then",
+    "should", "could", "would", "existing", "current", "using", "used", "use",
+    "issue", "proposal", "problem", "possible", "direction", "behavior", "change",
+    "changes", "test", "tests", "file", "files", "code", "also", "only", "before",
+    "after", "while", "where", "there", "their", "they", "them", "each",
+}
+
+
+@dataclass(frozen=True)
+class Session:
+    repository: str
+    token: str
+    bot_login: str
 
 
 def configured(config: Config) -> bool:
@@ -115,9 +135,9 @@ def _repository_path(repository: str) -> str:
     return repository
 
 
-def _installation_access(config: Config, repository: str) -> dict:
+def _installation_access(config: Config, repository: str, app_jwt: str | None = None) -> dict:
     repository = _repository_path(repository)
-    app_jwt = _app_jwt(config)
+    app_jwt = app_jwt or _app_jwt(config)
     installation = _api("GET", f"/repos/{repository}/installation", app_jwt)
     if not isinstance(installation, dict) or type(installation.get("id")) is not int:
         raise Error("GitHub App is not installed on the target repository.")
@@ -130,9 +150,56 @@ def _installation_access(config: Config, repository: str) -> dict:
     return access
 
 
+def session(config: Config, repository: str) -> Session:
+    repository = _repository_path(repository)
+    cache_key = (config.github_app_id, config.github_private_key_path, repository)
+    cached = _SESSION_CACHE.get(cache_key)
+    if cached and cached[0] > time.monotonic():
+        return cached[1]
+
+    app_jwt = _app_jwt(config)
+    app = _api("GET", "/app", app_jwt)
+    if not isinstance(app, dict) or not isinstance(app.get("slug"), str):
+        raise Error("GitHub App identity could not be resolved.")
+    access = _installation_access(config, repository, app_jwt)
+    active = Session(repository, access["token"], f"{app['slug']}[bot]")
+    # Installation tokens normally last an hour. Reauthenticate early rather
+    # than persisting them or relying on exact remote expiry parsing.
+    _SESSION_CACHE[cache_key] = (time.monotonic() + 45 * 60, active)
+    return active
+
+
 def preflight(config: Config, repository: str) -> str:
-    _installation_access(config, repository)
-    return f"GitHub App {config.github_app_id} can publish proposal issues to {repository}"
+    active = session(config, repository)
+    return f"GitHub App {config.github_app_id} ({active.bot_login}) can write issue discussions in {repository}"
+
+
+def issue_thread(active: Session, issue_number: int) -> dict:
+    if type(issue_number) is not int or issue_number <= 0:
+        raise Error("Issue number must be a positive integer.")
+    issue = _api("GET", f"/repos/{active.repository}/issues/{issue_number}", active.token)
+    comments = _api(
+        "GET",
+        f"/repos/{active.repository}/issues/{issue_number}/comments?per_page=100",
+        active.token,
+    )
+    if not isinstance(issue, dict) or not isinstance(comments, list):
+        raise Error("GitHub returned an invalid issue thread.")
+    return {"issue": issue, "comments": comments}
+
+
+def post_comment(active: Session, issue_number: int, body: str) -> dict:
+    if not body.strip():
+        raise Error("Refusing to post an empty GitHub comment.")
+    created = _api(
+        "POST",
+        f"/repos/{active.repository}/issues/{issue_number}/comments",
+        active.token,
+        {"body": body},
+    )
+    if not isinstance(created, dict) or type(created.get("id")) is not int:
+        raise Error("GitHub comment creation returned incomplete metadata.")
+    return created
 
 
 def _clip(value: str, limit: int = 6000) -> str:
@@ -150,12 +217,7 @@ def issue_body(maintainer: str, run_id: str, sha: str, finding: dict) -> str:
         "",
         "No implementation has been started. This issue is a proposal for maintainer discussion.",
         "",
-        "## Problem",
-        "",
-        _clip(finding["problem"]),
-        "",
-        "## Evidence",
-        "",
+        "## Problem", "", _clip(finding["problem"]), "", "## Evidence", "",
     ]
     lines.extend(f"- {_clip(item, 1500)}" for item in finding["evidence"][:12])
     lines.extend([
@@ -169,21 +231,81 @@ def issue_body(maintainer: str, run_id: str, sha: str, finding: dict) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _record(state: State, run_id: str, repository: str, issue: dict, title: str) -> dict:
-    number = issue.get("number")
-    url = issue.get("html_url")
+def overlap_comment(maintainer: str, run_id: str, sha: str, finding: dict) -> str:
+    marker = f"<!-- maintainerd overlap-run={run_id} finding=0 -->"
+    lines = [
+        marker,
+        f"**{maintainer}** independently investigated this area at `{sha}` and found overlapping evidence.",
+        "",
+        "Rather than open a duplicate issue, I’m adding the finding here.",
+        "",
+        "### Additional finding",
+        "",
+        _clip(finding["problem"]),
+        "",
+        "### Evidence",
+        "",
+    ]
+    lines.extend(f"- {_clip(item, 1500)}" for item in finding["evidence"][:12])
+    lines.extend(["", "### Suggested direction", "", _clip(finding["proposal"])])
+    if finding["tradeoffs"].strip():
+        lines.extend(["", "### Tradeoffs", "", _clip(finding["tradeoffs"])])
+    if finding["questions"]:
+        lines.extend(["", "### Questions", ""])
+        lines.extend(f"- {_clip(item, 1500)}" for item in finding["questions"][:12])
+    return "\n".join(lines).strip() + "\n"
+
+
+def _terms(text: str) -> set[str]:
+    return {
+        token.casefold().strip("./:-")
+        for token in WORD.findall(text)
+        if token.casefold().strip("./:-") not in STOPWORDS
+    }
+
+
+def _paths(text: str) -> set[str]:
+    return {match.rstrip(".,:;)").casefold() for match in PATH.findall(text)}
+
+
+def similarity(finding: dict, item: dict) -> float:
+    candidate_title = " ".join(finding["title"].casefold().split())
+    existing_title = " ".join(str(item.get("title") or "").casefold().split())
+    title_ratio = SequenceMatcher(None, candidate_title, existing_title).ratio()
+    candidate_text = "\n".join([
+        finding["title"], finding["problem"], *finding["evidence"], finding["proposal"],
+    ])
+    existing_text = f"{item.get('title') or ''}\n{item.get('body') or ''}"
+    left, right = _terms(candidate_text), _terms(existing_text)
+    overlap = len(left & right) / max(1, min(len(left), len(right)))
+    paths_left, paths_right = _paths(candidate_text), _paths(existing_text)
+    path_score = len(paths_left & paths_right) / max(1, min(len(paths_left), len(paths_right))) if paths_left and paths_right else 0
+    return max(title_ratio, 0.55 * title_ratio + 0.35 * overlap + 0.10 * path_score)
+
+
+def _record_route(
+    state: State,
+    run_id: str,
+    repository: str,
+    item: dict,
+    title: str,
+    mode: str,
+    comment_id: int | None = None,
+) -> dict:
+    number = item.get("number")
+    url = item.get("html_url")
     if type(number) is not int or not isinstance(url, str) or not url.startswith("https://github.com/"):
-        raise Error("GitHub issue creation returned incomplete metadata.")
+        raise Error("GitHub publication returned incomplete issue metadata.")
     with state.db:
         state.db.execute(
-            "INSERT OR IGNORE INTO proposal_publications"
-            "(run_id,finding_index,repository,issue_number,issue_url,title,published_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (run_id, 0, repository, number, url, title, utcnow()),
+            "INSERT OR IGNORE INTO proposal_routes"
+            "(run_id,finding_index,repository,issue_number,issue_url,title,mode,comment_id,published_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (run_id, 0, repository, number, url, title, mode, comment_id, utcnow()),
         )
-    rows = state.rows("SELECT * FROM proposal_publications WHERE run_id=? AND finding_index=0", (run_id,))
+    rows = state.rows("SELECT * FROM proposal_routes WHERE run_id=? AND finding_index=0", (run_id,))
     if not rows:
-        raise Error("Proposal publication could not be recorded locally.")
+        raise Error("Proposal route could not be recorded locally.")
     return rows[0]
 
 
@@ -197,7 +319,7 @@ def _refresh_report(state: State, run: dict) -> None:
         *((context.get("github") or {}).get("limitations") or []),
     ]
     publications = state.rows(
-        "SELECT * FROM proposal_publications WHERE run_id=? ORDER BY finding_index", (run["id"],)
+        "SELECT * FROM proposal_routes WHERE run_id=? ORDER BY finding_index", (run["id"],)
     )
     parsed = json.loads(run["result"])
     (artifacts / "report.md").write_text(
@@ -205,6 +327,15 @@ def _refresh_report(state: State, run: dict) -> None:
         encoding="utf-8",
     )
     write_json(artifacts / "publication.json", publications)
+
+
+def _existing_owner(state: State, repository: str, issue_number: int) -> set[str]:
+    rows = state.rows(
+        "SELECT DISTINCT r.maintainer FROM proposal_routes p "
+        "JOIN runs r ON r.id=p.run_id WHERE p.repository=? AND p.issue_number=?",
+        (repository, issue_number),
+    )
+    return {row["maintainer"] for row in rows}
 
 
 def publish_run(state: State, run_id: str) -> dict:
@@ -215,9 +346,7 @@ def publish_run(state: State, run_id: str) -> dict:
     if parsed.get("outcome") != "propose" or len(parsed.get("findings", [])) != 1:
         raise Error("This run does not contain exactly one publishable proposal.")
 
-    existing = state.rows(
-        "SELECT * FROM proposal_publications WHERE run_id=? AND finding_index=0", (run_id,)
-    )
+    existing = state.rows("SELECT * FROM proposal_routes WHERE run_id=? AND finding_index=0", (run_id,))
     if existing:
         return existing[0]
 
@@ -227,38 +356,66 @@ def publish_run(state: State, run_id: str) -> dict:
     if not target:
         raise Error("The managed repository has no GitHub owner/repo configured.")
 
-    access = _installation_access(state.config, target)
-    token = access["token"]
+    active = session(state.config, target)
     finding = parsed["findings"][0]
     title = finding["title"].strip()
     marker = f"<!-- maintainerd run={run_id} finding=0 -->"
 
     recent = _api(
         "GET",
-        f"/repos/{_repository_path(target)}/issues?state=all&sort=created&direction=desc&per_page=100",
-        token,
+        f"/repos/{_repository_path(target)}/issues?state=all&sort=updated&direction=desc&per_page=100",
+        active.token,
     )
     if not isinstance(recent, list):
         raise Error("GitHub issues response was not a list.")
+
+    ranked: list[tuple[float, dict]] = []
     for item in recent:
-        if not isinstance(item, dict) or "pull_request" in item:
+        if not isinstance(item, dict):
             continue
         body = item.get("body") or ""
         if marker in body:
-            publication = _record(state, run_id, target, item, title)
+            route = _record_route(state, run_id, target, item, title, "created")
             _refresh_report(state, run)
-            return publication
-        if item.get("state") == "open" and str(item.get("title") or "").casefold() == title.casefold():
-            raise Error(f"An open issue already has the title {title!r}; review it before publishing a duplicate.")
+            return route
+        ranked.append((similarity(finding, item), item))
+
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    if ranked and ranked[0][0] >= 0.78:
+        score, item = ranked[0]
+        number = item.get("number")
+        if type(number) is not int:
+            raise Error("Potential duplicate did not have a valid issue number.")
+        if item.get("state") != "open":
+            raise Error(
+                f"Proposal strongly overlaps closed GitHub item #{number} (similarity {score:.2f}). "
+                "Review that history before reopening the topic."
+            )
+        owners = _existing_owner(state, target, number)
+        if maintainer["name"] in owners:
+            raise Error(
+                f"This maintainer already has an overlapping open thread at #{number} "
+                f"(similarity {score:.2f}); no duplicate comment was posted."
+            )
+        created_comment = post_comment(
+            active,
+            number,
+            overlap_comment(maintainer["name"], run_id, run.get("commit_sha") or "", finding),
+        )
+        route = _record_route(
+            state, run_id, target, item, title, "joined", created_comment.get("id")
+        )
+        _refresh_report(state, run)
+        return route
 
     created = _api(
         "POST",
         f"/repos/{_repository_path(target)}/issues",
-        token,
+        active.token,
         {"title": title, "body": issue_body(maintainer["name"], run_id, run.get("commit_sha") or "", finding)},
     )
     if not isinstance(created, dict):
         raise Error("GitHub issue creation returned an invalid response.")
-    publication = _record(state, run_id, target, created, title)
+    route = _record_route(state, run_id, target, created, title, "created")
     _refresh_report(state, run)
-    return publication
+    return route

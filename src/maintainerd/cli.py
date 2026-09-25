@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import __version__, codex, cycle, publisher, repo
+from . import __version__, codex, cycle, discussion, publisher, repo
 from .state import Error, State, default_home, name, utcnow
 
 
@@ -47,8 +47,11 @@ def parser() -> argparse.ArgumentParser:
     show = commands.add_parser("show", help="Print a report and its artifact location")
     show.add_argument("run", nargs="?", default="latest")
     show.add_argument("--json", action="store_true")
-    publish = commands.add_parser("publish", help="Publish one completed proposal report as a GitHub issue")
+    publish = commands.add_parser("publish", help="Route one completed proposal into GitHub discussion")
     publish.add_argument("run", nargs="?", default="latest")
+    inbox = commands.add_parser("inbox", help="Fetch new comments and let a maintainer respond when useful")
+    inbox.add_argument("name")
+    inbox.add_argument("--max-threads", type=int, default=2)
     memories = commands.add_parser("memory", help="Inspect observations or add explicit human guidance").add_subparsers(dest="action", required=True)
     add_note = memories.add_parser("add")
     add_note.add_argument("name")
@@ -60,9 +63,10 @@ def parser() -> argparse.ArgumentParser:
     forget.add_argument("id", type=int)
     commands.add_parser("pause", help="Prevent new real runs; does not interrupt an active run")
     commands.add_parser("resume", help="Permit new real runs")
-    serve = commands.add_parser("serve", help="Opt-in foreground exploration loop; may publish proposals if enabled")
+    serve = commands.add_parser("serve", help="Foreground maintenance loop: discussion polling plus exploration")
     serve.add_argument("name")
     serve.add_argument("--every-hours", type=float, default=12)
+    serve.add_argument("--poll-seconds", type=int, default=300)
     return root
 
 
@@ -108,27 +112,47 @@ def doctor(state: State) -> int:
     return int(failed)
 
 
-def serve(state: State, maintainer: str, hours: float) -> None:
+def serve(state: State, maintainer: str, hours: float, poll_seconds: int) -> None:
     if not 1 <= hours <= 168:
         raise Error("--every-hours must be between 1 and 168.")
+    if not 30 <= poll_seconds <= 3600:
+        raise Error("--poll-seconds must be between 30 and 3600.")
     state.one("maintainers", maintainer)
-    print(f"Foreground loop for {maintainer}, every {hours:g} hours. Ctrl+C stops it.", flush=True)
+    next_poll = 0.0
+    print(
+        f"Foreground loop for {maintainer}: explore every {hours:g}h, "
+        f"check discussions every {poll_seconds}s. Ctrl+C stops it.",
+        flush=True,
+    )
     while True:
         if (state.home / "PAUSED").exists():
             time.sleep(30)
             continue
-        rows = state.rows("SELECT started_at FROM runs WHERE maintainer=? AND invoked=1 "
-                          "ORDER BY started_at DESC, rowid DESC LIMIT 1", (maintainer,))
+
+        monotonic = time.monotonic()
+        if monotonic >= next_poll:
+            discussion.sync_once(state, maintainer)
+            next_poll = time.monotonic() + poll_seconds
+
+        rows = state.rows(
+            "SELECT started_at FROM runs WHERE maintainer=? AND invoked=1 "
+            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            (maintainer,),
+        )
         now = datetime.now(timezone.utc)
         due = datetime.fromisoformat(rows[0]["started_at"]) + timedelta(hours=hours) if rows else now
         if not state.remaining():
-            due = max(due, (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0))
+            due = max(
+                due,
+                (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0),
+            )
         delay = (due - now).total_seconds()
-        if delay > 0:
-            time.sleep(min(delay, 30))
+        if delay <= 0 and state.remaining():
+            cycle.wake(state, maintainer, "scheduled")
             continue
-        # Any runtime error stops the loop instead of burning allowance retrying.
-        cycle.wake(state, maintainer, "scheduled")
+
+        until_poll = max(1.0, next_poll - time.monotonic())
+        time.sleep(min(30.0, until_poll, max(1.0, delay)))
 
 
 def dispatch(args: argparse.Namespace, state: State) -> int:
@@ -207,6 +231,10 @@ def dispatch(args: argparse.Namespace, state: State) -> int:
             with state.lock():
                 publication = publisher.publish_run(state, run_id)
             print(f"Published proposal #{publication['issue_number']}: {publication['issue_url']}")
+        case "inbox":
+            processed = discussion.sync_once(state, args.name, max_threads=args.max_threads)
+            if not processed:
+                print("Inbox checked; no discussion turn was needed.")
         case "memory":
             state.one("maintainers", args.name)
             if args.action == "list":
@@ -231,7 +259,7 @@ def dispatch(args: argparse.Namespace, state: State) -> int:
             (state.home / "PAUSED").unlink(missing_ok=True)
             print("New runs permitted. No process or schedule was started.")
         case "serve":
-            serve(state, args.name, args.every_hours)
+            serve(state, args.name, args.every_hours, args.poll_seconds)
     return 0
 
 
@@ -247,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, interrupted)
     try:
         if not sys.platform.startswith("linux"):
-            raise Error("Milestone 0 currently supports Linux only.")
+            raise Error("maintainerd currently supports Linux only.")
         state = State(args.home)
         return dispatch(args, state)
     except KeyboardInterrupt:
