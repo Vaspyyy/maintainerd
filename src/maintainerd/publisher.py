@@ -27,6 +27,8 @@ WORD = re.compile(r"[A-Za-z][A-Za-z0-9_./:-]{2,}")
 PATH = re.compile(r"(?:src|tests|docs|examples)/[A-Za-z0-9_./-]+")
 _SESSION_CACHE: dict[tuple[object, ...], tuple[float, "Session"]] = {}
 
+OVERLAP_THRESHOLD = 0.76
+
 STOPWORDS = {
     "the", "and", "for", "with", "that", "this", "from", "into", "when", "then",
     "should", "could", "would", "existing", "current", "using", "used", "use",
@@ -381,7 +383,7 @@ def publish_run(state: State, run_id: str) -> dict:
         ranked.append((similarity(finding, item), item))
 
     ranked.sort(key=lambda pair: pair[0], reverse=True)
-    if ranked and ranked[0][0] >= 0.78:
+    if ranked and ranked[0][0] >= OVERLAP_THRESHOLD:
         score, item = ranked[0]
         number = item.get("number")
         if type(number) is not int:

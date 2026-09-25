@@ -105,8 +105,8 @@ class PublicationTests(unittest.TestCase):
             "title": "Document localization CSV encoding",
             "body": "Explain UTF-8 BOM handling in docs/localization.md.",
         }
-        self.assertGreaterEqual(publisher.similarity(FINDING, same), 0.78)
-        self.assertLess(publisher.similarity(FINDING, other), 0.78)
+        self.assertGreaterEqual(publisher.similarity(FINDING, same), publisher.OVERLAP_THRESHOLD)
+        self.assertLess(publisher.similarity(FINDING, other), publisher.OVERLAP_THRESHOLD)
 
     @patch("maintainerd.publisher.session")
     @patch("maintainerd.publisher._api")
