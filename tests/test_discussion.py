@@ -110,6 +110,35 @@ class DiscussionTests(unittest.TestCase):
         self.assertEqual(rows[1]["status"], "pending")
         self.assertEqual(rows[1]["author_type"], "Bot")
 
+    def test_same_external_comment_can_be_seen_by_two_distinct_maintainers(self):
+        with self.state.db:
+            self.state.db.execute(
+                "INSERT INTO maintainers(name,repository,mission) VALUES (?,?,?)",
+                ("noah", "sdk", "Improve it independently."),
+            )
+        comments = [{
+            "id": 77,
+            "body": "A shared engineering observation.",
+            "created_at": "2026-01-02",
+            "user": {"login": "third-maintainer[bot]", "type": "Bot"},
+        }]
+        self.assertEqual(
+            discussion._record_comments(
+                self.state, "mira", "owner/repo", 11, comments, "mira-maintains[bot]"
+            ),
+            1,
+        )
+        self.assertEqual(
+            discussion._record_comments(
+                self.state, "noah", "owner/repo", 11, comments, "noah-maintains[bot]"
+            ),
+            1,
+        )
+        rows = self.state.rows(
+            "SELECT maintainer,status FROM thread_events WHERE comment_id=77 ORDER BY maintainer"
+        )
+        self.assertEqual([row["maintainer"] for row in rows], ["mira", "noah"])
+
     @patch("maintainerd.discussion.codex.preflight", return_value="codex-test")
     @patch("maintainerd.discussion.codex.execute")
     @patch("maintainerd.discussion.publisher.post_comment")

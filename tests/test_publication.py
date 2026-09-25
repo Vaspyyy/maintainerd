@@ -75,7 +75,7 @@ class PublicationTests(unittest.TestCase):
 
     def test_schema_migrated_for_coordination(self):
         version = self.state.db.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 3)
+        self.assertEqual(version, 4)
         for table in ("proposal_routes", "thread_events", "thread_turns"):
             self.assertEqual(
                 self.state.db.execute(
@@ -83,6 +83,17 @@ class PublicationTests(unittest.TestCase):
                 ).fetchone()[0],
                 1,
             )
+
+    def test_per_maintainer_identity_overrides_global_fallback(self):
+        with self.state.db:
+            self.state.db.execute(
+                "INSERT INTO maintainer_identities(maintainer,github_app_id,github_private_key_path) "
+                "VALUES (?,?,?)",
+                ("mira", 999, "/tmp/mira.pem"),
+            )
+        config = publisher.config_for(self.state, "mira")
+        self.assertEqual(config.github_app_id, 999)
+        self.assertEqual(config.github_private_key_path, "/tmp/mira.pem")
 
     def test_one_finding_maximum(self):
         with self.assertRaises(Error):

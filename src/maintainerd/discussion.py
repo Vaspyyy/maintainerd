@@ -336,7 +336,7 @@ def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> in
         target = repository.get("github")
         if not target:
             raise Error("The maintainer's repository has no GitHub owner/repo configured.")
-        active = publisher.session(state.config, target)
+        active = publisher.session_for(state, maintainer_name, target)
         routes = state.rows(
             "SELECT DISTINCT p.repository,p.issue_number FROM proposal_routes p "
             "JOIN runs r ON r.id=p.run_id WHERE r.maintainer=? AND p.repository=? "

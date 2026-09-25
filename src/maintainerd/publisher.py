@@ -11,7 +11,7 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -47,6 +47,25 @@ class Session:
 
 def configured(config: Config) -> bool:
     return config.github_app_id is not None and config.github_private_key_path is not None
+
+
+def config_for(state: State, maintainer: str) -> Config:
+    rows = state.rows(
+        "SELECT github_app_id,github_private_key_path FROM maintainer_identities WHERE maintainer=?",
+        (maintainer,),
+    )
+    if not rows:
+        return state.config
+    row = rows[0]
+    return replace(
+        state.config,
+        github_app_id=row["github_app_id"],
+        github_private_key_path=row["github_private_key_path"],
+    )
+
+
+def configured_for(state: State, maintainer: str) -> bool:
+    return configured(config_for(state, maintainer))
 
 
 def _b64url(value: bytes) -> str:
@@ -174,6 +193,14 @@ def session(config: Config, repository: str) -> Session:
 def preflight(config: Config, repository: str) -> str:
     active = session(config, repository)
     return f"GitHub App {config.github_app_id} ({active.bot_login}) can write issue discussions in {repository}"
+
+
+def session_for(state: State, maintainer: str, repository: str) -> Session:
+    return session(config_for(state, maintainer), repository)
+
+
+def preflight_for(state: State, maintainer: str, repository: str) -> str:
+    return preflight(config_for(state, maintainer), repository)
 
 
 def issue_thread(active: Session, issue_number: int) -> dict:
@@ -358,7 +385,7 @@ def publish_run(state: State, run_id: str) -> dict:
     if not target:
         raise Error("The managed repository has no GitHub owner/repo configured.")
 
-    active = session(state.config, target)
+    active = session_for(state, maintainer["name"], target)
     finding = parsed["findings"][0]
     title = finding["title"].strip()
     marker = f"<!-- maintainerd run={run_id} finding=0 -->"

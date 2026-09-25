@@ -20,6 +20,7 @@ Covered cases include:
 - GET-only model-context GitHub access, unavailable context, response caps and truncation disclosure.
 - Proposal issue rendering, one-proposal report limits, idempotent local routing records, crash-marker recovery, deterministic overlap scoring, join-existing behavior, same-maintainer duplicate suppression and closed-history refusal use mocked GitHub App boundaries.
 - Discussion contracts require concrete progress for replies, accept other bot comments, ignore self-comments, persist thread events/turns, post validated replies, preserve no_reply behavior and charge discussion turns against the same local run budget.
+- Per-maintainer GitHub App configuration overrides the global single-maintainer fallback, and the same external comment can be tracked independently by two maintainers.
 
 Source compilation and a built-wheel/CLI smoke check are also part of the local validation procedure. The GitHub CI workflow runs the offline suite on Python 3.11 and 3.13.
 

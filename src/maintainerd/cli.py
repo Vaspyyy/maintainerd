@@ -37,6 +37,16 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("--repo", dest="repository", help="Optional when one repository is registered")
     create.add_argument("--mission", default=cycle.MISSION)
     maintainers.add_parser("list")
+    identities = commands.add_parser(
+        "identity", help="Optional per-maintainer GitHub App identities"
+    ).add_subparsers(dest="action", required=True)
+    identity_set = identities.add_parser("set")
+    identity_set.add_argument("name")
+    identity_set.add_argument("--app-id", type=int, required=True)
+    identity_set.add_argument("--key-path", required=True)
+    identity_clear = identities.add_parser("clear")
+    identity_clear.add_argument("name")
+    identities.add_parser("list")
     wake = commands.add_parser("wake", help="One finite maintenance cycle")
     wake.add_argument("name")
     wake.add_argument("--reason", choices=["exploration", "maintenance", "scheduled"], default="exploration")
@@ -91,21 +101,45 @@ def doctor(state: State) -> int:
             print("WARN gh is installed but login was not confirmed; use 'gh auth login'.")
     else:
         print("WARN gh not found; repository inspection works but live issue/PR/CI context will be missing.")
-    if publisher.configured(state.config):
-        repositories = state.rows("SELECT github FROM repositories WHERE github IS NOT NULL ORDER BY name")
-        if repositories:
-            try:
-                print("PASS " + publisher.preflight(state.config, repositories[0]["github"]))
-            except Error as exc:
-                print(f"FAIL {exc}")
-                failed = True
+    identities = state.rows(
+        "SELECT m.name,r.github FROM maintainers m "
+        "JOIN repositories r ON r.name=m.repository ORDER BY m.name"
+    )
+    bot_owners: dict[str, list[str]] = {}
+    if not identities:
+        if publisher.configured(state.config):
+            print("INFO GitHub App configured; create a maintainer to verify its repository installation.")
         else:
-            print("WARN GitHub App configured, but no GitHub repository is registered yet.")
-    elif state.config.publish_proposals:
-        print("FAIL proposal publishing is enabled without a GitHub App identity")
-        failed = True
-    else:
-        print("INFO GitHub proposal publishing disabled; local proposal reports still work.")
+            print("INFO No GitHub maintainer identity configured yet.")
+    for item in identities:
+        if not item["github"]:
+            print(f"WARN {item['name']} has no GitHub owner/repo configured.")
+            continue
+        if not publisher.configured_for(state, item["name"]):
+            message = f"{item['name']} has no GitHub App identity"
+            if state.config.publish_proposals:
+                print("FAIL " + message)
+                failed = True
+            else:
+                print("INFO " + message + "; local reports still work.")
+            continue
+        try:
+            active = publisher.session_for(state, item["name"], item["github"])
+            config = publisher.config_for(state, item["name"])
+            print(
+                f"PASS GitHub App {config.github_app_id} ({active.bot_login}) can write "
+                f"issue discussions in {item['github']} for {item['name']}"
+            )
+            bot_owners.setdefault(active.bot_login, []).append(item["name"])
+        except Error as exc:
+            print(f"FAIL {item['name']}: {exc}")
+            failed = True
+    for bot_login, owners in bot_owners.items():
+        if len(owners) > 1:
+            print(
+                f"WARN {', '.join(owners)} share {bot_login}; give them distinct Apps "
+                "before expecting bot-to-bot conversation."
+            )
     print(f"Remaining run starts today (UTC): {state.remaining()}/{state.config.max_runs_per_day}")
     print("Doctor does not call a model or prove sandbox enforcement. The first wake is the live integration check.")
     print("Use trusted repositories only; the Codex sandbox is not a separate VM or protection from reading your home.")
@@ -190,6 +224,42 @@ def dispatch(args: argparse.Namespace, state: State) -> int:
             else:
                 for item in state.rows("SELECT * FROM maintainers ORDER BY name"):
                     print(f"{item['name']}  ->  {item['repository']}")
+        case "identity":
+            if args.action == "list":
+                rows = state.rows(
+                    "SELECT maintainer,github_app_id,github_private_key_path "
+                    "FROM maintainer_identities ORDER BY maintainer"
+                )
+                for item in rows:
+                    print(
+                        f"{item['maintainer']}  app={item['github_app_id']}  "
+                        f"key={item['github_private_key_path']}"
+                    )
+                if not rows:
+                    print("No per-maintainer identities; configured maintainers use the global App fallback.")
+            else:
+                state.one("maintainers", args.name)
+                with state.lock(), state.db:
+                    if args.action == "clear":
+                        state.db.execute(
+                            "DELETE FROM maintainer_identities WHERE maintainer=?", (args.name,)
+                        )
+                        print(f"{args.name} now uses the global GitHub App fallback.")
+                    else:
+                        if args.app_id <= 0:
+                            raise Error("--app-id must be a positive integer.")
+                        key_path = str(Path(args.key_path).expanduser().resolve())
+                        if "\n" in key_path:
+                            raise Error("--key-path must be a filesystem path.")
+                        state.db.execute(
+                            "INSERT INTO maintainer_identities("
+                            "maintainer,github_app_id,github_private_key_path"
+                            ") VALUES (?,?,?) ON CONFLICT(maintainer) DO UPDATE SET "
+                            "github_app_id=excluded.github_app_id,"
+                            "github_private_key_path=excluded.github_private_key_path",
+                            (args.name, args.app_id, key_path),
+                        )
+                        print(f"Saved GitHub App identity for {args.name}. Run doctor to verify it.")
         case "wake":
             cycle.wake(state, args.name, args.reason, dry_run=args.dry_run, keep_worktree=args.keep_worktree)
         case "runs":

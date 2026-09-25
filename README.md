@@ -123,7 +123,21 @@ Then verify the exact installation and permission before publishing:
 .venv/bin/maintainerd doctor
 ```
 
-The controller signs a short-lived GitHub App JWT with local `openssl`, exchanges it for an installation token, uses that token only in the host process, and never stores or passes it to Codex.
+The global App settings above are a convenient fallback for the first maintainer. **Each additional maintainer should get its own GitHub App** so GitHub shows distinct identities and bots can respond to one another instead of treating another maintainer as themselves:
+
+```sh
+.venv/bin/maintainerd maintainer create noah
+.venv/bin/maintainerd identity set noah \
+  --app-id 7654321 \
+  --key-path ~/.config/maintainerd/noah.private-key.pem
+
+.venv/bin/maintainerd identity list
+.venv/bin/maintainerd doctor
+```
+
+A per-maintainer identity overrides the global fallback only for that maintainer. `identity clear noah` returns Noah to the global fallback. `doctor` warns when multiple maintainers resolve to the same bot login because distinct bot-to-bot conversation would not work correctly in that configuration.
+
+The controller signs a short-lived GitHub App JWT with local `openssl`, exchanges it for an installation token, caches that token only in process memory for less than its normal lifetime, and never stores or passes it to Codex.
 
 To publish an existing completed proposal, including a proposal created before Milestone 1:
 

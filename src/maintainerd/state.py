@@ -125,7 +125,7 @@ class State:
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=WAL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3):
+        if version not in (0, 1, 2, 3, 4):
             self.db.close()
             raise Error(f"State schema {version} is newer than this maintainerd supports.")
         self.db.executescript('''
@@ -172,6 +172,11 @@ class State:
                 published_at TEXT NOT NULL,
                 UNIQUE(run_id, finding_index)
             );
+            CREATE TABLE IF NOT EXISTS maintainer_identities (
+                maintainer TEXT PRIMARY KEY REFERENCES maintainers(name) ON DELETE CASCADE,
+                github_app_id INTEGER NOT NULL,
+                github_private_key_path TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS thread_events (
                 id INTEGER PRIMARY KEY,
                 maintainer TEXT NOT NULL REFERENCES maintainers(name),
@@ -210,7 +215,7 @@ class State:
             )
             SELECT run_id,finding_index,repository,issue_number,issue_url,title,'created',NULL,published_at
             FROM proposal_publications;
-            PRAGMA user_version=3;
+            PRAGMA user_version=4;
         ''')
 
     def close(self) -> None:
