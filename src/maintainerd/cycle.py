@@ -58,8 +58,9 @@ Safety and scope:
   dated observations that must be verified against current code.
 - New features, public APIs, semantic changes and speculative ideas require
   discussion before implementation. No permission is implied by silence.
-- No GitHub action or credential is available to you. The trusted controller,
-  not the model process, may publish a validated proposal after this run.
+- No GitHub action is available to you and no GitHub credential is exposed.
+  The trusted controller, not the model process, may publish a validated
+  proposal after this run.
   Never describe an issue as opened unless supplied context already proves it.
 - A proposal is not approval to implement. No permission is implied by silence.
 
