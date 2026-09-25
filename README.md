@@ -253,14 +253,16 @@ The coordination model stays deliberately small:
 1. **Ideas are not exclusive.** Independent maintainers may rediscover the same problem or disagree in the same thread.
 2. **Publication is deduplicated.** Strongly overlapping discoveries join an existing open issue/PR instead of creating another one.
 3. **Discussion is open.** Human-to-bot and bot-to-bot engineering conversation are both valid; only self-comments are ignored.
-4. **Implementation will be claimed.** When code-writing arrives, one maintainer will hold the active implementation lease for an issue unless parallel implementations are explicitly requested.
+4. **Implementation is claimed remotely before coding.** All agents competing for issue `#N` attempt the same canonical branch `maintainerd/issue-N`. The first non-force remote creation wins. The winner immediately opens a draft PR from an empty claim commit. **No implementation source may be edited before that draft PR exists.**
+5. **Work stays visible while it is happening.** The winner adds coherent commits to the already-open draft PR and pushes them one by one. No force-push or hidden giant final upload. Other maintainers can see partial progress and stop duplicating it.
+6. **Parallel implementations are exceptional.** A second implementation branch requires explicit human authorization rather than being an automatic response to disagreement.
 
-No manager agent allocates work and no component assigns permanent subsystems to maintainers.
+The open draft PR is the implementation lease. No manager agent allocates work and no component assigns permanent subsystems to maintainers. The full invariant is documented in [docs/IMPLEMENTATION_PROTOCOL.md](docs/IMPLEMENTATION_PROTOCOL.md).
 
 ## Next milestones
 
 1. Add explicit human approval state to proposal threads.
-2. Add approved-work implementation in isolated task worktrees, tests, branch publication and draft PRs. One implementation lease per issue; other maintainers may still discuss and review.
+2. Add approved-work implementation using the documented claim-first protocol: atomic canonical branch claim, empty claim commit, **draft PR before code**, then incremental pushed commits in an isolated task worktree.
 3. Add PR review/revision loops while keeping human merging as the default.
 4. Then add a second independent maintainer identity and optionally another machine.
 
