@@ -2,7 +2,7 @@
 
 ## Exercised locally
 
-81 automated tests passed on Linux with Python 3.13 and Git 2.47. The suite was run in short batches to fit the execution environment's per-command time limit.
+85 automated tests passed on Linux with Python 3.13 and Git 2.47. The suite was run in short batches to fit the execution environment's per-command time limit.
 
 Tests use real local Git repositories, separate bare copies, worktrees, SQLite databases, advisory file locks and child processes. A deliberately fake Codex executable implements the tested CLI boundary, and GitHub responses are mocked. No subscription allowance or API billing was used.
 
@@ -23,6 +23,7 @@ Covered cases include:
 - Per-maintainer GitHub App configuration overrides the global single-maintainer fallback, and the same external comment can be tracked independently by two maintainers.
 - Explicit implementation approval excludes casual design agreement, is limited to the repository owner, accepts natural permission phrasing such as `you may create a PR`, runs before model discussion, and can recover an already-processed approval from durable thread history.
 - Claim-first implementation tests cover canonical issue branches, draft-PR creation before writable turns, remote-claim loss without alternate branches, draft-state enforcement, workspace-write invocation, one coherent controller commit, final-commit completion, ready-for-review transition/reconciliation, non-force publication boundaries, and the shared launch budget.
+- Multi-maintainer scheduling covers multiple CLI names, minute-scale exploration cadence, distinct-bot identity enforcement, and round-robin serialized operation; `max_runs_per_day=0` is validated as an unlimited local cap.
 
 Source compilation and a built-wheel/CLI smoke check are also part of the local validation procedure. The GitHub CI workflow runs the offline suite on Python 3.11 and 3.13.
 
