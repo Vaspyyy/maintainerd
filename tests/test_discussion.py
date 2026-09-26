@@ -139,6 +139,50 @@ class DiscussionTests(unittest.TestCase):
         )
         self.assertEqual([row["maintainer"] for row in rows], ["mira", "noah"])
 
+    @patch("maintainerd.discussion.implementation.run_step")
+    @patch("maintainerd.discussion.implementation.authorize")
+    @patch("maintainerd.discussion.publisher.issue_thread")
+    @patch("maintainerd.discussion.publisher.session_for")
+    def test_historical_approval_preempts_another_discussion_turn(
+        self, session_for, issue_thread, authorize, run_step
+    ):
+        active = publisher.Session(
+            "owner/repo",
+            "token",
+            "mira-maintains[bot]",
+            {"issues":"write","contents":"write","pull_requests":"write"},
+        )
+        session_for.return_value = active
+        with self.state.db:
+            self.state.db.execute(
+                "INSERT INTO thread_events("
+                "maintainer,repository,issue_number,comment_id,author,author_type,body,created_at,"
+                "status,processed_at,turn_id"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "mira", "owner/repo", 11, 400, "owner", "User",
+                    "sounds good. you may create a PR with option 1. thanks mira!",
+                    "2026-01-02", "processed", "2026-01-02", "thread:old",
+                ),
+            )
+        issue_thread.return_value = self.thread([])
+        authorize.return_value = {
+            "id": 7,
+            "repository": "owner/repo",
+            "issue_number": 11,
+            "pr_number": 14,
+        }
+
+        with patch("maintainerd.discussion.respond") as respond, \
+                contextlib.redirect_stdout(io.StringIO()):
+            processed = discussion.sync_once(self.state, "mira")
+
+        self.assertEqual(processed, 2)
+        history = authorize.call_args.args[-1]
+        self.assertEqual(history[0]["comment_id"], 400)
+        run_step.assert_called_once()
+        respond.assert_not_called()
+
     @patch("maintainerd.discussion.codex.preflight", return_value="codex-test")
     @patch("maintainerd.discussion.codex.execute")
     @patch("maintainerd.discussion.publisher.post_comment")

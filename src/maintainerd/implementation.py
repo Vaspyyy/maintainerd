@@ -18,6 +18,16 @@ APPROVAL_PATTERNS = (
     re.compile(r"\b(?:please\s+)?implement\s+(?:it|this|that|option\b)", re.I),
     re.compile(r"\bmake\s+(?:the|a)\s+(?:draft\s+)?pr\b", re.I),
     re.compile(r"\bopen\s+(?:the|a)\s+(?:draft\s+)?pr\b", re.I),
+    re.compile(
+        r"\b(?:you\s+)?(?:may|can)\s+(?:go\s+ahead\s+and\s+)?"
+        r"(?:create|open|make)\s+(?:the|a)\s+(?:draft\s+)?pr\b",
+        re.I,
+    ),
+    re.compile(
+        r"\bfeel\s+free\s+to\s+(?:create|open|make)\s+(?:the|a)\s+"
+        r"(?:draft\s+)?pr\b",
+        re.I,
+    ),
 )
 
 TEXT = {"type": "string", "maxLength": 12000}
@@ -676,6 +686,13 @@ def authorize(
     issue_number: int,
     events: list[dict],
 ) -> dict | None:
+    existing = state.rows(
+        "SELECT * FROM implementations WHERE repository=? AND issue_number=?",
+        (active.repository, issue_number),
+    )
+    if existing:
+        return None
+
     approval = approval_event(events, active.repository)
     if approval is None:
         return None
@@ -689,6 +706,19 @@ def authorize(
             (utcnow(), f"implementation:{implementation['id']}", approval["id"]),
         )
     return implementation
+
+
+def approval_history(
+    state: State,
+    maintainer: str,
+    repository: str,
+    issue_number: int,
+) -> list[dict]:
+    return state.rows(
+        "SELECT * FROM thread_events WHERE maintainer=? AND repository=? "
+        "AND issue_number=? ORDER BY comment_id",
+        (maintainer, repository, issue_number),
+    )
 
 
 def continue_one(

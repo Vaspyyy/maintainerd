@@ -21,7 +21,7 @@ Covered cases include:
 - Proposal issue rendering, one-proposal report limits, idempotent local routing records, crash-marker recovery, deterministic overlap scoring, join-existing behavior, same-maintainer duplicate suppression and closed-history refusal use mocked GitHub App boundaries.
 - Discussion contracts require concrete progress for replies, accept other bot comments, ignore self-comments, persist thread events/turns, post validated replies, preserve no_reply behavior and charge discussion turns against the same local run budget.
 - Per-maintainer GitHub App configuration overrides the global single-maintainer fallback, and the same external comment can be tracked independently by two maintainers.
-- Explicit implementation approval excludes casual design agreement, is limited to the repository owner, and supports clear commands such as `/implement` or `implement it`.
+- Explicit implementation approval excludes casual design agreement, is limited to the repository owner, accepts natural permission phrasing such as `you may create a PR`, runs before model discussion, and can recover an already-processed approval from durable thread history.
 - Claim-first implementation tests cover canonical issue branches, draft-PR creation before writable turns, remote-claim loss without alternate branches, draft-state enforcement, workspace-write invocation, one coherent controller commit, final-commit completion, ready-for-review transition/reconciliation, non-force publication boundaries, and the shared launch budget.
 
 Source compilation and a built-wheel/CLI smoke check are also part of the local validation procedure. The GitHub CI workflow runs the offline suite on Python 3.11 and 3.13.

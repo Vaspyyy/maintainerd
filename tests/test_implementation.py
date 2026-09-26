@@ -61,6 +61,8 @@ class ImplementationTests(unittest.TestCase):
             "go ahead and implement option 1",
             "please implement this",
             "make the PR",
+            "sounds good. you may create a PR with option 1. thanks mira!",
+            "feel free to open a PR with option 1",
         ):
             with self.subTest(text=text):
                 self.assertTrue(implementation.explicit_approval(text))
@@ -77,6 +79,27 @@ class ImplementationTests(unittest.TestCase):
         self.assertEqual(
             implementation.approval_event(events, "owner/repo")["author"], "owner"
         )
+
+    def test_processed_owner_approval_is_recoverable_from_history(self):
+        with self.state.db:
+            self.state.db.execute(
+                "INSERT INTO thread_events("
+                "maintainer,repository,issue_number,comment_id,author,author_type,body,created_at,"
+                "status,processed_at,turn_id"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "mira", "owner/repo", 15, 5845302552, "owner", "User",
+                    "sounds good. you may create a PR with option 1. thanks mira!",
+                    "2026-01-02", "processed", "2026-01-02", "thread:old",
+                ),
+            )
+        history = implementation.approval_history(
+            self.state, "mira", "owner/repo", 15
+        )
+        self.assertEqual(len(history), 1)
+        approval = implementation.approval_event(history, "owner/repo")
+        self.assertIsNotNone(approval)
+        self.assertEqual(approval["comment_id"], 5845302552)
 
     @patch("maintainerd.implementation.publisher.update_pull_request")
     @patch("maintainerd.implementation.publisher.create_draft_pr")

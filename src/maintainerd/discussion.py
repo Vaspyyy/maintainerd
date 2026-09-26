@@ -358,19 +358,19 @@ def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> in
         processed_threads = 0
         implementation_stepped = False
         for route in routes:
-            pending = _pending(state, maintainer_name, target, route["issue_number"])
-            if not pending:
-                continue
             if processed_threads >= max_threads:
                 break
 
+            history = implementation.approval_history(
+                state, maintainer_name, target, route["issue_number"]
+            )
             approved = implementation.authorize(
                 state,
                 maintainer,
                 repository,
                 active,
                 route["issue_number"],
-                pending,
+                history,
             )
             if approved is not None:
                 processed_threads += 1
@@ -385,6 +385,10 @@ def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> in
                         "implementation will continue on a later poll.",
                         flush=True,
                     )
+                continue
+
+            pending = _pending(state, maintainer_name, target, route["issue_number"])
+            if not pending:
                 continue
 
             if not state.remaining():

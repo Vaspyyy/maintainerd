@@ -191,9 +191,11 @@ implement it
 go ahead and implement option 1
 please implement this
 make the PR
+you may create a PR with option 1
+feel free to open a PR with option 1
 ```
 
-Only a non-bot comment from the GitHub repository owner can pass this gate in Milestone 3.
+Only a non-bot comment from the GitHub repository owner can pass this gate in Milestone 3. Approval detection runs **before** the discussion model. It also checks stored thread history, so if an older controller accidentally processed an explicit approval as ordinary discussion, a later poll can recover that command without asking the owner to post it again.
 
 After approval, the controller follows [docs/IMPLEMENTATION_PROTOCOL.md](docs/IMPLEMENTATION_PROTOCOL.md):
 
