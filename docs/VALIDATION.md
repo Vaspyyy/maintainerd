@@ -2,7 +2,7 @@
 
 ## Exercised locally
 
-85 automated tests passed on Linux with Python 3.13 and Git 2.47. The suite was run in short batches to fit the execution environment's per-command time limit.
+90 automated tests passed on Linux with Python 3.13 and Git 2.47. The suite was run in short batches to fit the execution environment's per-command time limit.
 
 Tests use real local Git repositories, separate bare copies, worktrees, SQLite databases, advisory file locks and child processes. A deliberately fake Codex executable implements the tested CLI boundary, and GitHub responses are mocked. No subscription allowance or API billing was used.
 
