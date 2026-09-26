@@ -207,7 +207,7 @@ def _pr_body(
     status_text = {
         "draft": "Implementation has started and this PR remains a draft.",
         "working": "Implementation is in progress and this PR remains a draft.",
-        "complete": "Implementation pass is complete; this PR remains a draft for review.",
+        "complete": "Implementation pass is complete and this PR is ready for review.",
         "blocked": "Implementation is blocked pending input; this PR remains a draft.",
     }.get(status, f"Implementation status: {status}.")
     lines.extend([
@@ -563,14 +563,9 @@ def run_step(
                 flush=True,
             )
             if result["complete"]:
-                publisher.post_comment(
-                    active,
-                    implementation["pr_number"],
-                    "Implementation pass is complete. I’m leaving this PR as a draft for review.",
-                )
                 print(
                     f"Implementation complete for #{implementation['issue_number']}; "
-                    f"draft PR #{implementation['pr_number']} left for review.",
+                    f"PR #{implementation['pr_number']} will be marked ready for review.",
                     flush=True,
                 )
         else:
@@ -585,14 +580,9 @@ def run_step(
                         "UPDATE implementations SET status='complete',updated_at=? WHERE id=?",
                         (utcnow(), implementation["id"]),
                     )
-                publisher.post_comment(
-                    active,
-                    implementation["pr_number"],
-                    "Implementation pass is complete. I’m leaving this PR as a draft for review.",
-                )
                 print(
                     f"Implementation complete for #{implementation['issue_number']}; "
-                    f"draft PR #{implementation['pr_number']} left for review.",
+                    f"PR #{implementation['pr_number']} will be marked ready for review.",
                     flush=True,
                 )
             else:
@@ -629,6 +619,22 @@ def run_step(
             (implementation["id"],),
         )[0]
         _refresh_pr_description(state, active, current)
+        if current["status"] == "complete":
+            try:
+                publisher.mark_ready_for_review(active, current["pr_number"])
+                print(
+                    f"PR #{current['pr_number']} is ready for review. Merge remains human-controlled.",
+                    flush=True,
+                )
+            except Error as exc:
+                write_json(
+                    artifacts / "ready-warning.json",
+                    {"message": str(exc), "pr_number": current["pr_number"]},
+                )
+                print(
+                    f"WARN PR #{current['pr_number']} is complete but still draft: {exc}",
+                    flush=True,
+                )
         return step_id
     except BaseException as exc:
         status = "interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else getattr(exc, "status", "failed")
@@ -690,6 +696,27 @@ def continue_one(
     maintainer_name: str,
     lock_fd: int,
 ) -> bool:
+    maintainer = state.one("maintainers", maintainer_name)
+    repository = state.one("repositories", maintainer["repository"])
+
+    completed = state.rows(
+        "SELECT * FROM implementations WHERE maintainer=? AND status='complete' "
+        "ORDER BY updated_at DESC,id DESC LIMIT 1",
+        (maintainer_name,),
+    )
+    if completed:
+        implementation = completed[0]
+        active = publisher.session_for(state, maintainer_name, implementation["repository"])
+        pr = publisher.pull_request(active, implementation["pr_number"])
+        if pr.get("state") == "open" and pr.get("draft", False):
+            _refresh_pr_description(state, active, implementation)
+            publisher.mark_ready_for_review(active, implementation["pr_number"])
+            print(
+                f"PR #{implementation['pr_number']} is ready for review. "
+                "Merge remains human-controlled.",
+                flush=True,
+            )
+
     rows = state.rows(
         "SELECT * FROM implementations WHERE maintainer=? AND status IN ('draft','working') "
         "ORDER BY updated_at, id LIMIT 1",
@@ -698,8 +725,6 @@ def continue_one(
     if not rows or not state.remaining():
         return False
     implementation = rows[0]
-    maintainer = state.one("maintainers", maintainer_name)
-    repository = state.one("repositories", maintainer["repository"])
     active = publisher.session_for(state, maintainer_name, implementation["repository"])
     publisher.require_implementation_permissions(active)
     run_step(state, maintainer, repository, active, implementation, lock_fd)

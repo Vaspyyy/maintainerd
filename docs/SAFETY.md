@@ -2,7 +2,7 @@
 
 ## What is enforced by this application
 
-The Codex process never receives GitHub credentials or a direct GitHub write tool. Exploration/discussion turns are read-only. Milestone 3 adds a narrowly gated workspace-write implementation turn only after the repository owner explicitly requests implementation, the canonical remote issue branch has been atomically claimed, and a draft PR already exists. The trusted controller validates paths, commits, and performs non-force pushes with a short-lived GitHub App token that never enters Codex. Registered user source checkouts remain untouched.
+The Codex process never receives GitHub credentials or a direct GitHub write tool. Exploration/discussion turns are read-only. Milestone 3 adds a narrowly gated workspace-write implementation turn only after the repository owner explicitly requests implementation, the canonical remote issue branch has been atomically claimed, and a draft PR already exists. The trusted controller validates paths, commits, performs non-force pushes, and marks a completed draft PR ready for review with a short-lived GitHub App token that never enters Codex. **Ready for review is not merge authorization.** Registered user source checkouts remain untouched.
 
 Codex receives a read-only sandbox request, approval_policy=never, disabled hosted web search, and disabled apps, plugins, hooks, subagents, goals and built-in memory features. User config and execution-policy rules are ignored. It starts in a fresh controller directory outside the target tree, so target-local .codex configuration is not selected as the starting configuration. Missing required CLI flags fail preflight. Unknown settings fail strict configuration parsing instead of being silently accepted.
 

@@ -345,6 +345,40 @@ def update_pull_request(
     return value
 
 
+def mark_ready_for_review(active: Session, number: int) -> dict:
+    pr = pull_request(active, number)
+    if pr.get("state") != "open":
+        raise Error("Only an open pull request can be marked ready for review.")
+    if not pr.get("draft", False):
+        return pr
+    node_id = pr.get("node_id")
+    if not isinstance(node_id, str) or not node_id:
+        raise Error("GitHub pull request did not expose a GraphQL node ID.")
+    value = _api(
+        "POST",
+        "/graphql",
+        active.token,
+        {
+            "query": (
+                "mutation($id: ID!) { "
+                "markPullRequestReadyForReview(input: {pullRequestId: $id}) { "
+                "pullRequest { number isDraft url } "
+                "} }"
+            ),
+            "variables": {"id": node_id},
+        },
+    )
+    if not isinstance(value, dict):
+        raise Error("GitHub returned an invalid ready-for-review response.")
+    errors = value.get("errors")
+    if errors:
+        raise Error("GitHub refused to mark the pull request ready for review.")
+    ready = (((value.get("data") or {}).get("markPullRequestReadyForReview") or {}).get("pullRequest") or {})
+    if ready.get("isDraft") is not False:
+        raise Error("GitHub did not confirm that the pull request is ready for review.")
+    return ready
+
+
 def issue_thread(active: Session, issue_number: int) -> dict:
     if type(issue_number) is not int or issue_number <= 0:
         raise Error("Issue number must be a positive integer.")

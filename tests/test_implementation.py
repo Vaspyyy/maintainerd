@@ -241,14 +241,14 @@ class ImplementationTests(unittest.TestCase):
         self.assertIn("python -m unittest tests.test_example", refreshed_body)
 
     @patch("maintainerd.implementation.publisher.update_pull_request")
-    @patch("maintainerd.implementation.publisher.post_comment")
+    @patch("maintainerd.implementation.publisher.mark_ready_for_review")
     @patch("maintainerd.implementation.repo.push_head")
     @patch("maintainerd.implementation.publisher.issue_thread")
     @patch("maintainerd.implementation.publisher.pull_request")
     @patch("maintainerd.implementation.codex.preflight", return_value="codex-test")
     @patch("maintainerd.implementation.codex.execute")
     def test_final_commit_can_complete_without_second_model_turn(
-        self, execute, preflight, pull_request, issue_thread, push_head, post_comment, update_pr
+        self, execute, preflight, pull_request, issue_thread, push_head, mark_ready, update_pr
     ):
         subprocess.check_call(
             ["git", "branch", "maintainerd/issue-11"], cwd=self.source
@@ -293,8 +293,30 @@ class ImplementationTests(unittest.TestCase):
         current = self.state.rows("SELECT * FROM implementations")[0]
         self.assertEqual(current["status"], "complete")
         push_head.assert_called_once()
-        post_comment.assert_called_once()
-        self.assertIn("complete", post_comment.call_args.args[2].lower())
+        mark_ready.assert_called_once_with(self.active, 12)
+        self.assertIn("ready for review", update_pr.call_args.kwargs["body"])
+
+    @patch("maintainerd.implementation.publisher.mark_ready_for_review")
+    @patch("maintainerd.implementation.publisher.pull_request")
+    @patch("maintainerd.implementation.publisher.session_for")
+    @patch("maintainerd.implementation._refresh_pr_description")
+    def test_complete_draft_is_reconciled_to_ready_without_model_turn(
+        self, refresh, session_for, pull_request, mark_ready
+    ):
+        impl = self._insert_implementation()
+        with self.state.db:
+            self.state.db.execute(
+                "UPDATE implementations SET status='complete' WHERE id=?", (impl["id"],)
+            )
+        session_for.return_value = self.active
+        pull_request.return_value = {"state": "open", "draft": True}
+
+        with patch("maintainerd.implementation.run_step") as run_step:
+            self.assertFalse(implementation.continue_one(self.state, "mira", 1))
+
+        refresh.assert_called_once()
+        mark_ready.assert_called_once_with(self.active, 12)
+        run_step.assert_not_called()
 
     def test_pr_body_hides_coordination_plumbing_below_engineering_context(self):
         issue = {

@@ -112,11 +112,12 @@ While the PR is open:
 - never rewrite published commit history;
 - prefer additive fix-up commits;
 - keep the PR draft while implementation is incomplete;
+- mark the PR ready for review when implementation completes;
 - do not merge autonomously.
 
 ## Ownership
 
-The open draft PR on the canonical issue branch is the implementation lease.
+While implementation is incomplete, the open draft PR on the canonical issue branch is the implementation lease. When implementation completes, maintainerd marks it ready for review and releases the implementation phase without merging it.
 
 Other maintainers may still:
 

@@ -214,7 +214,7 @@ Each implementation turn may make at most one coherent commit. The model can mar
 
 Draft PR descriptions are engineering-facing rather than controller-facing. They start with the issue summary/problem/approved direction, keep claim mechanics in a collapsed metadata block, and are refreshed after every implementation turn with progress, reported validation commands, limitations, and current status.
 
-When the implementation reports complete, the PR intentionally remains a **draft** for review rather than being merged or silently marked ready.
+When the implementation reports complete, maintainerd refreshes the PR description and automatically marks the draft **ready for review**. Merge remains human-controlled.
 
 Inspect current work with:
 

@@ -2,7 +2,7 @@
 
 ## Exercised locally
 
-78 automated tests passed on Linux with Python 3.13 and Git 2.47. The suite was run in short batches to fit the execution environment's per-command time limit.
+79 automated tests passed on Linux with Python 3.13 and Git 2.47. The suite was run in short batches to fit the execution environment's per-command time limit.
 
 Tests use real local Git repositories, separate bare copies, worktrees, SQLite databases, advisory file locks and child processes. A deliberately fake Codex executable implements the tested CLI boundary, and GitHub responses are mocked. No subscription allowance or API billing was used.
 
@@ -22,7 +22,7 @@ Covered cases include:
 - Discussion contracts require concrete progress for replies, accept other bot comments, ignore self-comments, persist thread events/turns, post validated replies, preserve no_reply behavior and charge discussion turns against the same local run budget.
 - Per-maintainer GitHub App configuration overrides the global single-maintainer fallback, and the same external comment can be tracked independently by two maintainers.
 - Explicit implementation approval excludes casual design agreement, is limited to the repository owner, and supports clear commands such as `/implement` or `implement it`.
-- Claim-first implementation tests cover canonical issue branches, draft-PR creation before writable turns, remote-claim loss without alternate branches, draft-state enforcement, workspace-write invocation, one coherent controller commit, non-force publication boundaries, and the shared launch budget.
+- Claim-first implementation tests cover canonical issue branches, draft-PR creation before writable turns, remote-claim loss without alternate branches, draft-state enforcement, workspace-write invocation, one coherent controller commit, final-commit completion, ready-for-review transition/reconciliation, non-force publication boundaries, and the shared launch budget.
 
 Source compilation and a built-wheel/CLI smoke check are also part of the local validation procedure. The GitHub CI workflow runs the offline suite on Python 3.11 and 3.13.
 
@@ -49,6 +49,6 @@ Source compilation and a built-wheel/CLI smoke check are also part of the local 
 8. Add a normal comment to a maintainer-created issue and run `maintainerd inbox mira`. Confirm a useful comment receives one bot reply and a trivial/self comment does not create a loop.
 9. Confirm `maintainerd doctor` reports draft-PR implementation capability after granting Contents and Pull requests read/write to the maintainer App.
 10. On a maintainer-owned issue, post an explicit repository-owner command such as `implement it`. Run `maintainerd inbox mira` and verify the canonical branch and **draft PR appear before any implementation commit**.
-11. Confirm each later inbox/serve poll adds at most one coherent commit to the same draft PR, never force-pushes, and leaves the PR draft when implementation reports complete.
+11. Confirm each later inbox/serve poll adds at most one coherent commit to the same draft PR and never force-pushes. When implementation reports complete, confirm the PR description updates first and the PR is automatically marked ready for review, without merging.
 
 Passing the controller tests proves mechanics, not good autonomous judgment. Stop autonomous publishing, replies, or implementation if public project quality degrades.
