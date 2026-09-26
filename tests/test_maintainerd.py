@@ -249,8 +249,8 @@ class CycleTests(Fixture):
         self.assertEqual(self.calls(), [])
         self.wake(dry_run=True)
 
-    def test_single_host_lock_prevents_second_run(self):
-        with self.state.lock():
+    def test_same_maintainer_lock_prevents_second_run(self):
+        with self.state.lock("maintainer-mira"):
             with self.assertRaises(Busy):
                 self.wake()
         self.assertEqual(self.calls(), [])
