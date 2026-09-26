@@ -105,14 +105,173 @@ def _pr_marker(issue_number: int, maintainer: str, claim_id: str) -> str:
     )
 
 
-def _pr_body(issue_number: int, maintainer: str, claim_id: str) -> str:
-    return (
-        f"{_pr_marker(issue_number, maintainer, claim_id)}\n"
-        f"Draft implementation for #{issue_number}, claimed by **{maintainer}**.\n\n"
-        "This draft PR was created **before implementation source edits**. "
-        "maintainerd will add coherent commits incrementally and never force-push "
-        "published history.\n\n"
-        f"Closes #{issue_number}\n"
+def _markdown_section(body: str, heading: str) -> str:
+    pattern = re.compile(
+        rf"(?ims)^##\s+{re.escape(heading)}\s*$\n(.*?)(?=^##\s+|\Z)"
+    )
+    match = pattern.search(body or "")
+    return match.group(1).strip() if match else ""
+
+
+def _clip_markdown(value: str, limit: int = 3000) -> str:
+    value = value.strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 32].rstrip() + "\n\n[truncated by maintainerd]"
+
+
+def _pr_body(
+    issue_number: int,
+    maintainer: str,
+    claim_id: str,
+    branch: str,
+    issue: dict,
+    approval: dict,
+    *,
+    steps: list[dict] | None = None,
+    status: str = "draft",
+) -> str:
+    steps = steps or []
+    issue_body = str(issue.get("body") or "")
+    title = str(issue.get("title") or f"Issue #{issue_number}").strip()
+    problem = _markdown_section(issue_body, "Problem")
+    direction = (
+        _markdown_section(issue_body, "Possible direction")
+        or _markdown_section(issue_body, "Proposal")
+    )
+
+    progress: list[str] = []
+    tests: list[str] = []
+    limitations: list[str] = []
+    for step in steps:
+        raw = step.get("result")
+        if not raw:
+            continue
+        try:
+            result = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(result, dict):
+            continue
+        summary = str(result.get("summary") or "").strip()
+        commit_sha = step.get("commit_sha")
+        if summary:
+            prefix = f"`{str(commit_sha)[:12]}` " if commit_sha else ""
+            progress.append(prefix + summary)
+        for item in result.get("tests_run") or []:
+            if isinstance(item, str) and item.strip():
+                tests.append(item.strip())
+        for item in result.get("limitations") or []:
+            if isinstance(item, str) and item.strip():
+                limitations.append(item.strip())
+
+    lines = [
+        _pr_marker(issue_number, maintainer, claim_id),
+        "",
+        "## Summary",
+        "",
+        f"Implements the approved fix for #{issue_number}: **{title}**.",
+    ]
+    if problem:
+        lines.extend(["", "## Problem", "", _clip_markdown(problem)])
+    if direction:
+        lines.extend(["", "## Approved direction", "", _clip_markdown(direction)])
+    lines.extend([
+        "",
+        "## Implementation progress",
+        "",
+    ])
+    if progress:
+        lines.extend(f"- {item}" for item in progress)
+    else:
+        lines.append(
+            "Draft claimed and opened. No implementation source commit has been published yet."
+        )
+
+    lines.extend(["", "## Validation", ""])
+    if tests:
+        for item in dict.fromkeys(tests):
+            lines.append(f"- `{item}`")
+    else:
+        lines.append("No implementation validation has been reported yet.")
+
+    if limitations:
+        lines.extend(["", "## Known limitations", ""])
+        lines.extend(f"- {item}" for item in dict.fromkeys(limitations))
+
+    status_text = {
+        "draft": "Implementation has started and this PR remains a draft.",
+        "working": "Implementation is in progress and this PR remains a draft.",
+        "complete": "Implementation pass is complete; this PR remains a draft for review.",
+        "blocked": "Implementation is blocked pending input; this PR remains a draft.",
+    }.get(status, f"Implementation status: {status}.")
+    lines.extend([
+        "",
+        "## Status",
+        "",
+        status_text,
+        "",
+        "<details>",
+        "<summary>maintainerd coordination metadata</summary>",
+        "",
+        f"- Maintainer: `{maintainer}`",
+        f"- Canonical branch: `{branch}`",
+        f"- Approval comment: #{approval.get('comment_id')}",
+        "- The draft PR was created before implementation source edits.",
+        "- Published history is never force-pushed by maintainerd.",
+        "",
+        "</details>",
+        "",
+        f"Closes #{issue_number}",
+    ])
+    return "\n".join(lines).strip() + "\n"
+
+
+def _steps_for_pr(state: State, implementation_id: int) -> list[dict]:
+    return state.rows(
+        "SELECT commit_sha,result,status,started_at FROM implementation_steps "
+        "WHERE implementation_id=? AND status='completed' ORDER BY started_at,id",
+        (implementation_id,),
+    )
+
+
+def _refresh_pr_description(
+    state: State,
+    active: publisher.Session,
+    implementation: dict,
+) -> None:
+    thread = publisher.issue_thread(active, implementation["issue_number"])
+    issue = thread["issue"]
+    approval_rows = state.rows(
+        "SELECT comment_id,author,body FROM thread_events "
+        "WHERE maintainer=? AND repository=? AND comment_id=? LIMIT 1",
+        (
+            implementation["maintainer"],
+            implementation["repository"],
+            implementation["approval_comment_id"],
+        ),
+    )
+    approval = approval_rows[0] if approval_rows else {
+        "comment_id": implementation["approval_comment_id"],
+        "author": implementation["approved_by"],
+        "body": "",
+    }
+    body = _pr_body(
+        implementation["issue_number"],
+        implementation["maintainer"],
+        implementation["claim_id"],
+        implementation["branch"],
+        issue,
+        approval,
+        steps=_steps_for_pr(state, implementation["id"]),
+        status=implementation["status"],
+    )
+    title = str(issue.get("title") or f"Issue #{implementation['issue_number']}").strip()
+    publisher.update_pull_request(
+        active,
+        implementation["pr_number"],
+        title=title,
+        body=body,
     )
 
 
@@ -194,8 +353,15 @@ def ensure_draft(
             active,
             branch=branch,
             base=repository["branch"],
-            title=f"Draft: {title}",
-            body=_pr_body(issue_number, maintainer["name"], claim_id),
+            title=title,
+            body=_pr_body(
+                issue_number,
+                maintainer["name"],
+                claim_id,
+                branch,
+                issue,
+                approval,
+            ),
         )
     else:
         body = str(pr.get("body") or "")
@@ -228,6 +394,7 @@ def ensure_draft(
         "SELECT * FROM implementations WHERE repository=? AND issue_number=?",
         (active.repository, issue_number),
     )[0]
+    _refresh_pr_description(state, active, row)
     print(f"Claimed #{issue_number}; draft PR created first: {pr_url}", flush=True)
     return row
 
@@ -436,6 +603,11 @@ def run_step(
                         "INSERT INTO notes(maintainer,body,source,created_at) VALUES (?,?,?,?)",
                         (maintainer["name"], observation, f"implementation:{step_id}", utcnow()),
                     )
+        current = state.rows(
+            "SELECT * FROM implementations WHERE id=?",
+            (implementation["id"],),
+        )[0]
+        _refresh_pr_description(state, active, current)
         return step_id
     except BaseException as exc:
         status = "interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else getattr(exc, "status", "failed")

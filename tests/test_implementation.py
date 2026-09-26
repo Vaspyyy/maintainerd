@@ -78,6 +78,7 @@ class ImplementationTests(unittest.TestCase):
             implementation.approval_event(events, "owner/repo")["author"], "owner"
         )
 
+    @patch("maintainerd.implementation.publisher.update_pull_request")
     @patch("maintainerd.implementation.publisher.create_draft_pr")
     @patch("maintainerd.implementation.publisher.issue_thread")
     @patch("maintainerd.implementation.publisher.pulls_for_head", return_value=[])
@@ -85,7 +86,7 @@ class ImplementationTests(unittest.TestCase):
     @patch("maintainerd.implementation.publisher.create_empty_commit")
     @patch("maintainerd.implementation.publisher.get_ref")
     def test_claim_branch_then_draft_pr_before_any_writable_turn(
-        self, get_ref, create_empty, create_ref, pulls, issue_thread, create_pr
+        self, get_ref, create_empty, create_ref, pulls, issue_thread, create_pr, update_pr
     ):
         get_ref.side_effect = [
             None,
@@ -93,7 +94,13 @@ class ImplementationTests(unittest.TestCase):
         ]
         create_empty.return_value = {"sha": "claim-sha"}
         issue_thread.return_value = {
-            "issue": {"title": "Fix duplicate focuses"},
+            "issue": {
+                "title": "Fix duplicate focuses",
+                "body": (
+                    "## Problem\n\nDuplicates can silently lose content.\n\n"
+                    "## Possible direction\n\nReject duplicates atomically before install.\n"
+                ),
+            },
             "comments": [],
         }
         create_pr.return_value = {
@@ -109,8 +116,16 @@ class ImplementationTests(unittest.TestCase):
         self.assertEqual(row["pr_number"], 12)
         create_ref.assert_called_once()
         create_pr.assert_called_once()
+        self.assertEqual(create_pr.call_args.kwargs["title"], "Fix duplicate focuses")
         body = create_pr.call_args.kwargs["body"]
+        self.assertIn("## Summary", body)
+        self.assertIn("## Problem", body)
+        self.assertIn("Duplicates can silently lose content.", body)
+        self.assertIn("## Approved direction", body)
+        self.assertIn("Reject duplicates atomically before install.", body)
+        self.assertIn("## Validation", body)
         self.assertIn("before implementation source edits", body.lower())
+        update_pr.assert_called_once()
 
     @patch("maintainerd.implementation.publisher.get_git_commit")
     @patch("maintainerd.implementation.publisher.get_ref")
@@ -159,13 +174,14 @@ class ImplementationTests(unittest.TestCase):
             )
         execute.assert_not_called()
 
+    @patch("maintainerd.implementation.publisher.update_pull_request")
     @patch("maintainerd.implementation.repo.push_head")
     @patch("maintainerd.implementation.publisher.issue_thread")
     @patch("maintainerd.implementation.publisher.pull_request")
     @patch("maintainerd.implementation.codex.preflight", return_value="codex-test")
     @patch("maintainerd.implementation.codex.execute")
     def test_one_writable_turn_produces_one_visible_commit(
-        self, execute, preflight, pull_request, issue_thread, push_head
+        self, execute, preflight, pull_request, issue_thread, push_head, update_pr
     ):
         subprocess.check_call(
             ["git", "branch", "maintainerd/issue-11"], cwd=self.source
@@ -178,7 +194,14 @@ class ImplementationTests(unittest.TestCase):
             "html_url": "https://github.com/owner/repo/pull/12",
         }
         issue_thread.return_value = {
-            "issue": {"number": 11, "title": "Fix it", "body": "approved"},
+            "issue": {
+                "number": 11,
+                "title": "Fix it",
+                "body": (
+                    "## Problem\n\nBroken behavior.\n\n"
+                    "## Possible direction\n\nFix it atomically.\n"
+                ),
+            },
             "comments": [],
         }
 
@@ -210,6 +233,44 @@ class ImplementationTests(unittest.TestCase):
         current = self.state.rows("SELECT * FROM implementations")[0]
         self.assertEqual(current["status"], "working")
         self.assertEqual(self.state.remaining(), 3)
+        update_pr.assert_called_once()
+        refreshed_body = update_pr.call_args.kwargs["body"]
+        self.assertIn("## Implementation progress", refreshed_body)
+        self.assertIn("Implement the first focused change.", refreshed_body)
+        self.assertIn("python -m unittest tests.test_example", refreshed_body)
+
+    def test_pr_body_hides_coordination_plumbing_below_engineering_context(self):
+        issue = {
+            "title": "Reject duplicate focus IDs",
+            "body": (
+                "## Problem\n\nSaving can drop content.\n\n"
+                "## Possible direction\n\nReject before installation.\n"
+            ),
+        }
+        body = implementation._pr_body(
+            11,
+            "mira",
+            "claim",
+            "maintainerd/issue-11",
+            issue,
+            self.approval(),
+            steps=[{
+                "commit_sha": "abcdef0123456789",
+                "result": json.dumps({
+                    "action": "commit",
+                    "summary": "Reject duplicates before installing trees.",
+                    "commit_message": "fix: reject duplicates",
+                    "tests_run": ["pytest tests/test_focus.py"],
+                    "limitations": [],
+                    "memory_notes": [],
+                }),
+            }],
+            status="working",
+        )
+        self.assertLess(body.index("## Summary"), body.index("maintainerd coordination metadata"))
+        self.assertIn("Saving can drop content.", body)
+        self.assertIn("Reject duplicates before installing trees.", body)
+        self.assertIn("pytest tests/test_focus.py", body)
 
     def test_step_contract_requires_commit_message_only_for_commit(self):
         good = {

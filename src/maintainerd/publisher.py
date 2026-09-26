@@ -320,6 +320,31 @@ def pull_request(active: Session, number: int) -> dict:
     return value
 
 
+def update_pull_request(
+    active: Session,
+    number: int,
+    *,
+    title: str | None = None,
+    body: str | None = None,
+) -> dict:
+    payload = {}
+    if title is not None:
+        payload["title"] = title
+    if body is not None:
+        payload["body"] = body
+    if not payload:
+        raise Error("Pull-request update needs a title or body.")
+    value = _api(
+        "PATCH",
+        f"/repos/{active.repository}/pulls/{number}",
+        active.token,
+        payload,
+    )
+    if not isinstance(value, dict):
+        raise Error("GitHub returned an invalid pull-request update.")
+    return value
+
+
 def issue_thread(active: Session, issue_number: int) -> dict:
     if type(issue_number) is not int or issue_number <= 0:
         raise Error("Issue number must be a positive integer.")
