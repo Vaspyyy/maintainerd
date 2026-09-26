@@ -1,8 +1,8 @@
-# Milestone 4 validation
+# Milestone 5 validation
 
 ## Exercised locally
 
-90 automated tests passed on Linux with Python 3.13 and Git 2.47. The suite was run in short batches to fit the execution environment's per-command time limit.
+99 automated tests passed on Linux with Python 3.13 and Git 2.47. The suite was run in short batches to fit the execution environment's per-command time limit.
 
 Tests use real local Git repositories, separate bare copies, worktrees, SQLite databases, advisory file locks and child processes. A deliberately fake Codex executable implements the tested CLI boundary, and GitHub responses are mocked. No subscription allowance or API billing was used.
 
@@ -25,6 +25,9 @@ Covered cases include:
 - Claim-first implementation tests cover canonical issue branches, draft-PR creation before writable turns, remote-claim loss without alternate branches, draft-state enforcement, workspace-write invocation, one coherent controller commit, final-commit completion, ready-for-review transition/reconciliation, non-force publication boundaries, and the shared launch budget.
 - Multi-maintainer scheduling covers multiple CLI names, minute-scale exploration cadence, distinct-bot identity enforcement, scoped per-maintainer locks, safe coexistence of different maintainer locks, module-based worker launch arguments, and `max_runs_per_day=0` as an unlimited local cap.
 - Parallel-safety regressions cover maintainer-scoped stale-run recovery and losing a remote implementation claim without crashing the competing worker. Shared bare-Git setup/cleanup and proposal publication are serialized separately from long model turns.
+- Shared-collaboration tests cover peer-created issue visibility, review result contracts, ready-PR peer-review eligibility, once-per-head review suppression, and avoiding redundant peer reviews while a current-head changes-requested review is already blocking.
+- Revision tests cover human CHANGES_REQUESTED and failed-CI transitions from complete/ready back to draft revision state, with durable blocker records consumed by the author's next implementation turn.
+- Publication tests cover removal of unrelated issue-reference bookkeeping and symbol/path fingerprinting for differently worded reports with the same root cause.
 
 Source compilation and a built-wheel/CLI smoke check are also part of the local validation procedure. The GitHub CI workflow runs the offline suite on Python 3.11 and 3.13.
 
@@ -38,6 +41,7 @@ Source compilation and a built-wheel/CLI smoke check are also part of the local 
 - A live GitHub branch claim, installation-token Git push, or draft-PR creation from the test environment; GitHub write boundaries are mocked.
 - A real workspace-write Codex implementation turn on the user's repository.
 - Sustained three-way live Codex concurrency on the user's subscription; offline tests validate controller mechanics, not provider-side concurrency behavior.
+- Live bot-authored GitHub peer reviews and a complete real review -> revision -> re-review cycle; those write boundaries are mocked in the offline suite.
 - Webhook delivery; foreground polling remains intentional for this milestone.
 
 ## Installation-side acceptance check
@@ -54,5 +58,8 @@ Source compilation and a built-wheel/CLI smoke check are also part of the local 
 10. On a maintainer-owned issue, post an explicit repository-owner command such as `implement it`. Run `maintainerd inbox mira` and verify the canonical branch and **draft PR appear before any implementation commit**.
 11. Confirm each later inbox/serve poll adds at most one coherent commit to the same draft PR and never force-pushes. When implementation reports complete, confirm the PR description updates first and the PR is automatically marked ready for review, without merging.
 12. Run `maintainerd serve mira noah iris --every-minutes 1 --poll-seconds 15`. Confirm the supervisor prints separately prefixed worker output and that more than one Codex process can be active at once while Git worktree setup remains conflict-free.
+13. Let one maintainer mark a PR ready. Confirm the other maintainers can independently review that exact head once, and that low-value review turns can remain silent.
+14. Submit CHANGES_REQUESTED on a maintainer PR. Confirm the author's next poll converts the PR to draft, surfaces the full review/inline blockers, pushes a revision, and returns the new head to ready-for-review without another implementation approval.
+15. Confirm unrelated issue-number inventories no longer appear in newly published issue evidence, and verify two differently titled findings with the same paths/symbols route to one discussion rather than duplicate issues.
 
 Passing the controller tests proves mechanics, not good autonomous judgment. Stop autonomous publishing, replies, or implementation if public project quality degrades.

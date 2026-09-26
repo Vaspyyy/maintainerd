@@ -27,6 +27,10 @@ manual wake, one-worker serve, or parallel multi-maintainer serve
     -> only then grant one workspace-write implementation turn
     -> commit and push one coherent step to the existing draft PR
     -> repeat on later polls until complete or blocked
+    -> mark complete work ready for review
+    -> peers review each PR head independently
+    -> CHANGES_REQUESTED or failing CI returns the author's PR to draft
+    -> author revises under the existing approval, then returns it to review
     -> clean up safe worktrees and stop
 ```
 
@@ -163,7 +167,11 @@ To publish an existing completed proposal, including a proposal created before M
 
 Publication is idempotent for a run. A crash after GitHub accepts the issue is recovered by the embedded run marker. Before opening a new issue, maintainerd compares the proposal against the 100 most recently updated GitHub issues/PRs. Strong overlap with an open thread routes the independent finding into that existing discussion instead of opening a duplicate. Strong overlap with a closed item stops automatic publication so an old decision is not silently reopened. If the same maintainer already owns the overlapping open thread, no duplicate comment is posted.
 
-This deterministic similarity gate is deliberately conservative, not magical semantic search. The exploration prompt also receives open items plus recent closed items and is expected to notice overlap itself. Independent rediscovery is useful; duplicate publication is what gets suppressed.
+The deterministic overlap gate now combines title/text similarity with shared file paths and concrete code symbols. Two differently worded reports that name the same code path and multiple same symbols are treated as strong overlap, which is specifically meant to catch cases like two agents independently describing the same state-patch root cause.
+
+Dedupe bookkeeping stays private. Evidence lines whose only purpose is saying that a range of unrelated issues was checked are removed from public issue bodies, and the exploration prompt explicitly forbids publishing unrelated issue-number inventories. A GitHub cross-reference should remain only when that older item is materially related.
+
+Independent rediscovery is useful; duplicate publication and notification spam are what get suppressed.
 
 With `publish_proposals = true`, future successful `propose` runs route automatically after the read-only model process has ended. A publication failure leaves the validated local report intact and records `publication-warning.json`.
 
@@ -180,6 +188,27 @@ Human comments and comments from **other bots** are both valid inputs. Only the 
 A reply is allowed only when the model's structured result identifies concrete progress such as new evidence, a code location, counterexample, correction, design alternative, synthesis, or concrete decision/question. Pure agreement and repetition should result in `no_reply`. Bot-to-bot discussion is intentionally allowed; a long bot-only streak merely raises the bar for adding another comment.
 
 Discussion turns use a fresh current repository snapshot and the complete fetched issue thread. They consume the same local daily Codex-run budget as exploration turns. No comment is marked processed until the turn completes successfully, so failures do not silently lose maintainer input.
+
+Agent-created proposal issues are a **shared workspace**. A newly published open issue is visible to the other maintainers as a synthetic discussion event, so they may independently inspect it and comment only when they can add concrete engineering information. Once an implementation PR exists, peer collaboration moves to PR review instead of duplicating issue chatter.
+
+## Peer review and revision loop
+
+Ready maintainer PRs are visible to every other configured maintainer. Each peer gets at most **one review turn per PR head SHA**. The review model sees the linked issue, exact PR branch, changed-file patches, existing reviews/comments and repository context, then may choose `approve`, `request_changes`, `comment`, or `no_review`. Approval and change requests are posted as real GitHub PR reviews, not generic comments.
+
+A blocking review or failing CI on the current PR head reopens the author's implementation automatically:
+
+```text
+ready PR
+  -> human or peer CHANGES_REQUESTED / failed CI
+  -> PR converted back to draft
+  -> author wakes with review + inline findings in context
+  -> revision commit(s) on the same canonical branch
+  -> validation
+  -> ready for review again
+  -> peers may review the new head SHA once
+```
+
+Review fixes stay inside the issue's existing implementation authorization; the repository owner does not need to approve the same scope again. Old reviews attached to an older head do not repeatedly reopen newer commits. Inline comments belonging to a blocking review are folded into the revision context. Human merge remains required.
 
 ## Explicit implementation approval
 
@@ -289,7 +318,9 @@ For an aggressive three-maintainer loop:
 
 `--every-minutes` accepts 1 to 10080 minutes. Discussion polling accepts 15 to 3600 seconds. Multi-maintainer `serve` now launches **one real worker process per maintainer**. Mira, Noah, and Iris can therefore have three Codex turns in flight at the same time. The supervisor multiplexes their output back into one terminal and prefixes every worker line, for example `[mira]`, `[noah]`, and `[iris]`.
 
-Each maintainer has its own exploration clock and its own long-lived worker lock. New maintainers are immediately due for a first inspection; afterward each is eligible again after the configured interval. Polls with nothing to answer cost no Codex usage. Active implementation work is continued through inbox polling, while that maintainer's proactive exploration is suppressed until the implementation is complete or blocked. Other maintainers keep exploring in parallel.
+Each maintainer has its own exploration clock and its own long-lived worker lock. New maintainers are immediately due for a first inspection; afterward each is eligible again after the configured interval. Polls with nothing to answer cost no Codex usage. Revision and implementation work have priority over fresh discussion, and implementation suppresses that maintainer's proactive exploration until it is complete or blocked. When no own implementation needs attention, the worker can inspect shared proposal threads or peer-review another maintainer's ready PR.
+
+Proactive exploration also receives a repository-wide **fleet coverage** summary from recent successful runs. Heavily inspected paths are soft negative pressure, encouraging the three maintainers to spread out across the codebase without assigning permanent subsystem roles.
 
 The shared bare Git repository is protected only during short fetch/worktree-metadata operations, SQLite runs in WAL mode with a busy timeout, proposal publication is serialized so two simultaneous discoveries cannot race into duplicate issue creation, and implementation still uses the canonical remote branch as the cross-worker claim. Losing that claim is a normal coordination result rather than a worker failure.
 
@@ -310,7 +341,7 @@ Pause prevents **new** real runs; it does not cancel one already active. Resume 
 
 The host's `gh` login fetches exploration context with GET requests only. The model gets a snapshot, not the GitHub credential or a GitHub write tool. The separate GitHub App credential is used only by trusted host-side publishing and discussion code. The exploration snapshot covers up to 100 open issues/PRs, comments on the five most recently updated open items, 30 recently closed issues/PRs, and ten recent workflow runs.
 
-Limits, unavailable data and truncation are recorded explicitly. PR diffs, inline reviews, older closed history and GitHub Discussions are still incomplete. Missing `gh` or failed authentication produces a code-only inspection with a warning, not a false claim that there are no existing discussions.
+Limits, unavailable data and truncation are recorded explicitly. Exploration snapshots remain intentionally bounded, but dedicated PR-review turns fetch the exact changed-file patches and current review state for the PR they inspect. The host's read-only `gh` login is also used to inspect current check-run conclusions so failed CI can return an author's PR to revision. Missing `gh` or failed authentication produces explicit CI/context limitations rather than pretending checks passed.
 
 ## Safety boundary
 
@@ -333,18 +364,19 @@ The coordination model stays deliberately small:
 
 1. **Ideas are not exclusive.** Independent maintainers may rediscover the same problem or disagree in the same thread.
 2. **Publication is deduplicated.** Strongly overlapping discoveries join an existing open issue/PR instead of creating another one.
-3. **Discussion is open.** Human-to-bot and bot-to-bot engineering conversation are both valid; only self-comments are ignored.
-4. **Implementation is claimed remotely before coding.** All agents competing for issue `#N` attempt the same canonical branch `maintainerd/issue-N`. The first non-force remote creation wins. The winner immediately opens a draft PR from an empty claim commit. **No implementation source may be edited before that draft PR exists.**
-5. **Work stays visible while it is happening.** The winner adds coherent commits to the already-open draft PR and pushes them one by one. No force-push or hidden giant final upload. Other maintainers can see partial progress and stop duplicating it.
-6. **Parallel implementations are exceptional.** A second implementation branch requires explicit human authorization rather than being an automatic response to disagreement.
+3. **Discussion is shared.** Proposal issues are visible across maintainers. Human-to-bot and bot-to-bot engineering conversation are both valid; only self-comments and low-value repetition are ignored.
+4. **Review is independent.** Other maintainers may review a ready PR once per head SHA. Blocking feedback returns the author to revision on the same branch; it never authorizes a competing implementation.
+5. **Implementation is claimed remotely before coding.** All agents competing for issue `#N` attempt the same canonical branch `maintainerd/issue-N`. The first non-force remote creation wins. The winner immediately opens a draft PR from an empty claim commit. **No implementation source may be edited before that draft PR exists.**
+6. **Work stays visible while it is happening.** The winner adds coherent commits to the already-open draft PR and pushes them one by one. No force-push or hidden giant final upload. Other maintainers can see partial progress and stop duplicating it.
+7. **Parallel implementations are exceptional.** A second implementation branch requires explicit human authorization rather than being an automatic response to disagreement.
 
 The open draft PR is the implementation lease. No manager agent allocates work and no component assigns permanent subsystems to maintainers. The full invariant is documented in [docs/IMPLEMENTATION_PROTOCOL.md](docs/IMPLEMENTATION_PROTOCOL.md).
 
 ## Next milestones
 
-1. Exercise the live approval -> claim -> draft PR -> incremental commit loop on a real issue and tune the implementation prompt.
-2. Add PR review/revision loops and CI-aware follow-up while keeping human merging as the default.
-3. Add stale-claim recovery for claim-only branches whose controller died before creating a PR.
+1. Exercise the live peer-review -> revision -> re-review cycle across Mira, Noah and Iris, including a human CHANGES_REQUESTED review.
+2. Add stale-claim recovery for claim-only branches whose controller died before creating a PR.
+3. Improve CI context with bounded failed-job excerpts when permissions allow it.
 4. Then consider a second machine once the three-maintainer single-host scheduler has enough real-world mileage.
 
 The contributor's purpose remains the same across milestones: notice useful work, investigate it, discuss when appropriate, and continue over time. The surrounding software should stay small enough to understand.

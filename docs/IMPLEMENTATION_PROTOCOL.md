@@ -150,3 +150,30 @@ The controller must design every transition to be restart-safe:
 
 This makes GitHub itself the cross-machine coordination authority while keeping
 the controller simple.
+
+
+## Review and revision
+
+A completed implementation being ready for review is not the end of its lifecycle.
+
+Each non-author maintainer may independently review a ready PR once for each distinct
+head SHA. Reviews are read-only model turns; the trusted controller posts validated
+GitHub review events. Pure agreement should normally become no_review rather than
+public bot chatter.
+
+A CHANGES_REQUESTED review on the current head, including its inline comments, is a
+revision request. Failed CI on the current head is also a revision request when the
+host can observe check-run status. The controller converts a ready PR back to draft
+before giving the author another writable turn.
+
+Revision work uses the original issue authorization and exact canonical branch. It
+does not create a new implementation claim or require the repository owner to repeat
+approval. The author receives pending review/CI blockers in context, pushes additive
+fix commits, validates them, refreshes the PR description, and marks the PR ready
+again when complete.
+
+Revision requests are keyed to the review/check and head that produced them. Once
+addressed, an old review must not repeatedly reopen a newer head. A new head is
+eligible for fresh independent peer reviews.
+
+Human merge authority remains unchanged throughout this loop.

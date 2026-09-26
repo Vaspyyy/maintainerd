@@ -383,6 +383,15 @@ def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> in
         discovered = 0
         open_routes = []
         for route in routes:
+            if route["owner_maintainer"] != maintainer_name:
+                implemented = state.rows(
+                    "SELECT id FROM implementations WHERE repository=? AND issue_number=? LIMIT 1",
+                    (target, route["issue_number"]),
+                )
+                if implemented:
+                    # Once another maintainer has an implementation PR, collaboration moves
+                    # to PR review rather than duplicating issue-thread discussion.
+                    continue
             thread = publisher.issue_thread(active, route["issue_number"])
             if thread["issue"].get("state") != "open":
                 continue

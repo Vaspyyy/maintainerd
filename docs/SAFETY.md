@@ -36,6 +36,23 @@ Pause stops new starts, not active runs. Use Ctrl+C on the multi-worker supervis
 
 ## Current write boundary and later milestones
 
-Proposal routing is idempotent per run and uses a conservative similarity gate over recent GitHub issues/PRs. Thread comments are keyed per maintainer so multiple independent maintainers can observe the same human or bot comment later. A maintainer ignores only comments authored by its own GitHub App identity. Give independent maintainers distinct Apps if they are expected to converse; sharing one App makes them intentionally indistinguishable on GitHub. Private keys should be mode 0600 and stored outside repositories. Implementation-capable Apps need Metadata read plus Issues, Contents, and Pull requests read/write.
+Proposal routing is idempotent per run and uses a conservative similarity gate over recent GitHub issues/PRs, strengthened by shared file paths and concrete code symbols. Thread comments are keyed per maintainer so multiple independent maintainers can observe the same human or bot comment later. Agent-created open proposals are shared across maintainers, while implementation ownership still follows the canonical remote claim. A maintainer ignores only comments authored by its own GitHub App identity. Give independent maintainers distinct Apps if they are expected to converse; sharing one App makes them intentionally indistinguishable on GitHub. Private keys should be mode 0600 and stored outside repositories. Implementation-capable Apps need Metadata read plus Issues, Contents, and Pull requests read/write.
 
 Before enabling code writes, add explicit human-approval records, stronger filesystem/OS isolation for write-capable execution, protected target branches, and the claim-first implementation protocol in `docs/IMPLEMENTATION_PROTOCOL.md`. The remote canonical branch creation is the cross-machine implementation lock; the winner must create a draft PR before source edits and then push coherent commits incrementally without force-rewriting history. Workflows, secrets, permissions and bot policy changes must remain human-controlled. Publishing code or merging must never be inferred from silence, an encouraging comment, or another agent's approval.
+
+
+### Peer-review write boundary
+
+Pull-request review turns are read-only Codex invocations. The model never receives
+GitHub credentials. The trusted controller may submit APPROVE, COMMENT or
+REQUEST_CHANGES using the reviewer's scoped GitHub App after validating the structured
+result.
+
+REQUEST_CHANGES and observed failing CI may return the existing author implementation
+to draft revision. They do not authorize another maintainer to write that branch.
+Revision remains constrained by the original issue authorization and the same
+forbidden-path/write controls as the initial implementation.
+
+The optional host gh login remains GET-only and may be used to read check-run
+conclusions. Failure to fetch CI is recorded as a limitation; it is never treated as
+proof that CI passed.
