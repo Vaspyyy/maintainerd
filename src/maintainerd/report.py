@@ -34,7 +34,7 @@ SCHEMA = {
 def check(value: object, schema: dict, path: str = "report") -> None:
     """Validate the small schema subset above, without a runtime dependency."""
     kind = schema["type"]
-    expected = {"object": dict, "array": list, "string": str}[kind]
+    expected = {"object": dict, "array": list, "string": str, "boolean": bool}[kind]
     if not isinstance(value, expected):
         raise Error(f"{path} must be {kind}.")
     if "enum" in schema and value not in schema["enum"]:
