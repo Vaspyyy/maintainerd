@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maintainerd"
-version = "0.7.0"
+version = "0.8.0"
 description = "Small, subscription-backed autonomous maintainer experiments."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-maintainerd = "maintainerd.cli:main"
+maintainerd = "maintainerd.hydra_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
