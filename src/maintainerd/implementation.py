@@ -27,6 +27,7 @@ STEP_SCHEMA = {
     "additionalProperties": False,
     "properties": {
         "action": {"type": "string", "enum": ["commit", "done", "needs_input"]},
+        "complete": {"type": "boolean"},
         "summary": TEXT,
         "commit_message": {"type": "string", "maxLength": 120},
         "tests_run": STRINGS,
@@ -34,7 +35,7 @@ STEP_SCHEMA = {
         "memory_notes": {**STRINGS, "maxItems": 5},
     },
     "required": [
-        "action", "summary", "commit_message", "tests_run", "limitations", "memory_notes"
+        "action", "complete", "summary", "commit_message", "tests_run", "limitations", "memory_notes"
     ],
 }
 
@@ -70,6 +71,10 @@ def parse_step(raw: str) -> dict:
             raise Error("A commit implementation step needs a one-line commit_message.")
     elif value["commit_message"].strip():
         raise Error("done/needs_input must not invent a commit message.")
+    if value["action"] == "done" and not value["complete"]:
+        raise Error("done must set complete=true.")
+    if value["action"] == "needs_input" and value["complete"]:
+        raise Error("needs_input cannot set complete=true.")
     return value
 
 
@@ -425,11 +430,15 @@ commit, push, create branches, use GitHub/network tools, or access credentials;
 the controller handles Git publication after validating your result.
 
 If one coherent step is ready, return action=commit with a concise one-line
-commit_message. The controller will validate paths, commit everything in the
-worktree, and push that single commit to the already-open draft PR.
+commit_message. Also set complete=true when that commit fully resolves the
+approved issue and your relevant validation is sufficient. The controller will
+validate paths, commit everything in the worktree, and push that single commit
+to the already-open draft PR. A final commit with complete=true ends the
+implementation immediately, without a second "check whether I'm done" turn.
 
-If the implementation is fully complete and the worktree needs no more changes,
-return action=done and leave the worktree clean. If a real design/product
+If the implementation was already complete before this turn and the worktree
+needs no changes, return action=done with complete=true and leave the worktree
+clean. If a real design/product
 decision blocks safe progress, return action=needs_input, leave the worktree
 clean, and explain the question in summary.
 
@@ -542,16 +551,28 @@ def run_step(
                 active.token,
             )
             safe_cleanup = True
+            new_status = "complete" if result["complete"] else "working"
             with state.db:
                 state.db.execute(
-                    "UPDATE implementations SET status='working',updated_at=? WHERE id=?",
-                    (utcnow(), implementation["id"]),
+                    "UPDATE implementations SET status=?,updated_at=? WHERE id=?",
+                    (new_status, utcnow(), implementation["id"]),
                 )
             print(
                 f"Pushed {commit_sha[:12]} to draft PR #{implementation['pr_number']}: "
                 f"{result['commit_message']}",
                 flush=True,
             )
+            if result["complete"]:
+                publisher.post_comment(
+                    active,
+                    implementation["pr_number"],
+                    "Implementation pass is complete. I’m leaving this PR as a draft for review.",
+                )
+                print(
+                    f"Implementation complete for #{implementation['issue_number']}; "
+                    f"draft PR #{implementation['pr_number']} left for review.",
+                    flush=True,
+                )
         else:
             if paths:
                 raise Error(

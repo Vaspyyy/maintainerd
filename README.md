@@ -210,7 +210,7 @@ owner approval
 
 If another maintainer already won the canonical branch, the loser stops before editing anything. The open draft PR is the implementation lease.
 
-Each implementation turn may make at most one coherent commit. GitHub credentials are never placed in the Codex environment. Changes to `.github/*`, `.git/*`, `AGENTS.md`, `CLAUDE.md`, and `.gitmodules` are blocked. A remote non-fast-forward push is a failure, never a reason to force-push.
+Each implementation turn may make at most one coherent commit. The model can mark that same commit as the final implementation step, so a completed fix does not require another Codex turn merely to say "done." GitHub credentials are never placed in the Codex environment. Changes to `.github/*`, `.git/*`, `AGENTS.md`, `CLAUDE.md`, and `.gitmodules` are blocked. A remote non-fast-forward push is a failure, never a reason to force-push.
 
 Draft PR descriptions are engineering-facing rather than controller-facing. They start with the issue summary/problem/approved direction, keep claim mechanics in a collapsed metadata block, and are refreshed after every implementation turn with progress, reported validation commands, limitations, and current status.
 

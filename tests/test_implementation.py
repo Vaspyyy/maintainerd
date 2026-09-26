@@ -211,6 +211,7 @@ class ImplementationTests(unittest.TestCase):
             (workspace / "src/example.py").write_text("VALUE = 2\n")
             (artifacts / "result.json").write_text(json.dumps({
                 "action": "commit",
+                "complete": False,
                 "summary": "Implement the first focused change.",
                 "commit_message": "fix: preserve inherited focus definitions",
                 "tests_run": ["python -m unittest tests.test_example"],
@@ -239,6 +240,62 @@ class ImplementationTests(unittest.TestCase):
         self.assertIn("Implement the first focused change.", refreshed_body)
         self.assertIn("python -m unittest tests.test_example", refreshed_body)
 
+    @patch("maintainerd.implementation.publisher.update_pull_request")
+    @patch("maintainerd.implementation.publisher.post_comment")
+    @patch("maintainerd.implementation.repo.push_head")
+    @patch("maintainerd.implementation.publisher.issue_thread")
+    @patch("maintainerd.implementation.publisher.pull_request")
+    @patch("maintainerd.implementation.codex.preflight", return_value="codex-test")
+    @patch("maintainerd.implementation.codex.execute")
+    def test_final_commit_can_complete_without_second_model_turn(
+        self, execute, preflight, pull_request, issue_thread, push_head, post_comment, update_pr
+    ):
+        subprocess.check_call(
+            ["git", "branch", "maintainerd/issue-11"], cwd=self.source
+        )
+        impl = self._insert_implementation()
+        pull_request.return_value = {
+            "state": "open",
+            "draft": True,
+            "number": 12,
+            "html_url": "https://github.com/owner/repo/pull/12",
+        }
+        issue_thread.return_value = {
+            "issue": {
+                "number": 11,
+                "title": "Fix it",
+                "body": "## Problem\n\nBroken.\n\n## Possible direction\n\nFix it.\n",
+            },
+            "comments": [],
+        }
+
+        def fake_execute(config, artifacts, prompt, lock_fd, **kwargs):
+            workspace = kwargs["workspace"]
+            (workspace / "src/example.py").write_text("VALUE = 3\n")
+            (artifacts / "result.json").write_text(json.dumps({
+                "action": "commit",
+                "complete": True,
+                "summary": "Finish the approved fix and validate it.",
+                "commit_message": "fix: finish approved behavior",
+                "tests_run": ["pytest -q"],
+                "limitations": [],
+                "memory_notes": [],
+            }))
+            (artifacts / "events.jsonl").write_text(
+                json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10}}) + "\n"
+            )
+            return {}
+        execute.side_effect = fake_execute
+
+        implementation.run_step(
+            self.state, self.maintainer, self.repository, self.active, impl, 1
+        )
+        current = self.state.rows("SELECT * FROM implementations")[0]
+        self.assertEqual(current["status"], "complete")
+        push_head.assert_called_once()
+        post_comment.assert_called_once()
+        self.assertIn("complete", post_comment.call_args.args[2].lower())
+
     def test_pr_body_hides_coordination_plumbing_below_engineering_context(self):
         issue = {
             "title": "Reject duplicate focus IDs",
@@ -258,6 +315,7 @@ class ImplementationTests(unittest.TestCase):
                 "commit_sha": "abcdef0123456789",
                 "result": json.dumps({
                     "action": "commit",
+                    "complete": True,
                     "summary": "Reject duplicates before installing trees.",
                     "commit_message": "fix: reject duplicates",
                     "tests_run": ["pytest tests/test_focus.py"],
@@ -275,6 +333,7 @@ class ImplementationTests(unittest.TestCase):
     def test_step_contract_requires_commit_message_only_for_commit(self):
         good = {
             "action": "commit",
+            "complete": False,
             "summary": "x",
             "commit_message": "fix: one thing",
             "tests_run": [],
@@ -284,8 +343,10 @@ class ImplementationTests(unittest.TestCase):
         self.assertEqual(implementation.parse_step(json.dumps(good))["action"], "commit")
         with self.assertRaises(Error):
             implementation.parse_step(json.dumps({**good, "commit_message": ""}))
-        done = {**good, "action": "done", "commit_message": ""}
+        done = {**good, "action": "done", "complete": True, "commit_message": ""}
         self.assertEqual(implementation.parse_step(json.dumps(done))["action"], "done")
+        with self.assertRaises(Error):
+            implementation.parse_step(json.dumps({**done, "complete": False}))
 
 
 if __name__ == "__main__":
