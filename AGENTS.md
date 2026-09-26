@@ -3,7 +3,7 @@
 This is a small, Linux-first autonomous-maintainer runtime. Keep it understandable.
 
 - The target is independent, persistent contributors, not a manager/builder/reviewer hierarchy.
-- Codex remains READ-ONLY in managed repositories. Milestone 2 permits only host-brokered proposal issue creation and top-level issue/PR conversation comments through a scoped GitHub App. Do not quietly introduce code writes, pushes, PR creation, API billing, auto-merging, repository-setting changes, or automatic startup.
+- Exploration and discussion Codex turns remain READ-ONLY. Milestone 3 permits workspace-write only after an explicit repository-owner implementation command, a won canonical remote claim, and an already-created draft PR. The trusted controller alone commits/pushes. Do not introduce force-pushes, autonomous merges, workflow edits, repository-setting changes, API billing, or automatic startup.
 - Independent rediscovery is allowed. Suppress duplicate publication, not independent thought. Strongly overlapping open work should join the existing thread; closed overlap should require review rather than silently reopen history.
 - Bot-to-bot engineering discussion is allowed. Ignore only the current maintainer's own bot comments. A reply must add concrete progress; agreement/repetition should be no_reply. Additional maintainers should use distinct GitHub App identities; a global App remains only a single-maintainer fallback.
 - Codex authentication must remain subscription-backed. Do not read, copy or print auth.json, API keys, token-bearing URLs or private keys. No billing fallback.

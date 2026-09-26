@@ -6,7 +6,7 @@ No manager agent, fixed developer roles, API billing integration, Redis, databas
 
 ## What works today
 
-Milestone 2 keeps Codex **read-only** while the trusted host controller can create proposal issues, route overlapping discoveries into existing threads, listen for new comments, and post validated discussion replies:
+Milestone 3 keeps exploration and discussion **read-only**, but adds an explicitly approved implementation path. The repository owner must use an implementation command in the issue thread; maintainerd then claims the canonical remote branch, creates a draft PR first, and only after that gives Codex a writable task worktree:
 
 ```text
 manual wake or optional interval
@@ -21,12 +21,18 @@ manual wake or optional interval
     -> poll owned/joined threads for new human or bot comments
     -> wake the same maintainer for a read-only discussion turn when useful
     -> post at most one validated reply
-    -> clean up unchanged worktrees and stop
+    -> explicit owner command such as "implement it"
+    -> atomically claim maintainerd/issue-N
+    -> create DRAFT PR from an empty claim commit
+    -> only then grant one workspace-write implementation turn
+    -> commit and push one coherent step to the existing draft PR
+    -> repeat on later polls until complete or blocked
+    -> clean up safe worktrees and stop
 ```
 
 A run can propose an improvement, identify missing context, or conclude that no action is worthwhile. Producing an issue or PR is not a quota. Speculative features and API changes should become discussions before implementation.
 
-Codex itself still cannot write GitHub or repository files. GitHub writes happen only in trusted controller code using a scoped GitHub App. **Milestone 2 can create issues and top-level issue/PR conversation comments, but still cannot modify code, push branches, open PRs, merge anything, or change repository settings.** Polling is used instead of webhooks so no public listener is required.
+Codex never receives GitHub credentials. Exploration and discussion turns remain read-only. An approved implementation turn uses Codex `workspace-write` only inside a controller-owned task worktree; the trusted controller validates changed paths, creates one commit, and pushes it with a short-lived GitHub App token. **No force-pushes, autonomous merges, workflow edits, or repository-setting changes are allowed.** Polling is still used instead of webhooks.
 
 ## Install
 
@@ -97,7 +103,7 @@ Keep proposal publishing disabled until you are happy with local reports. Then c
 1. GitHub **Settings -> Developer settings -> GitHub Apps -> New GitHub App**.
 2. Give it a distinct name such as `mira-maintains`. A homepage URL can point at this repository.
 3. Webhooks are not used yet, so disable **Active** under Webhook.
-4. Repository permissions: **Issues: Read and write**. Metadata read access is automatic. Do not grant Contents, Actions, Administration, Secrets or Pull requests for Milestone 1.
+4. Repository permissions for Milestone 3: **Issues: Read and write**, **Contents: Read and write**, and **Pull requests: Read and write**. Metadata read access is automatic. Do not grant Administration, Secrets, Environments, or Workflows write. Actions/Checks read access is optional for later CI-aware behavior.
 5. Install the App only on the managed repository, for example `Vaspyyy/hoi4-agent-sdk`.
 6. Generate a private key, move it somewhere outside all repositories, and restrict it:
 
@@ -167,6 +173,53 @@ A reply is allowed only when the model's structured result identifies concrete p
 
 Discussion turns use a fresh current repository snapshot and the complete fetched issue thread. They consume the same local daily Codex-run budget as exploration turns. No comment is marked processed until the turn completes successfully, so failures do not silently lose maintainer input.
 
+## Explicit implementation approval
+
+Design agreement is deliberately **not** implementation approval. A comment like:
+
+```text
+option 1 sounds good
+```
+
+resolves the design question but does not authorize source changes.
+
+The repository owner can explicitly hand the issue to the maintainer with phrases such as:
+
+```text
+implement it
+/implement option 1
+go ahead and implement option 1
+please implement this
+make the PR
+```
+
+Only a non-bot comment from the GitHub repository owner can pass this gate in Milestone 3.
+
+After approval, the controller follows [docs/IMPLEMENTATION_PROTOCOL.md](docs/IMPLEMENTATION_PROTOCOL.md):
+
+```text
+owner approval
+    -> create empty claim commit
+    -> atomically create maintainerd/issue-N on GitHub
+    -> immediately create DRAFT PR
+    -> only now start workspace-write Codex
+    -> one coherent change step
+    -> controller commits + non-force pushes
+    -> next poll continues with another visible commit
+```
+
+If another maintainer already won the canonical branch, the loser stops before editing anything. The open draft PR is the implementation lease.
+
+Each implementation turn may make at most one coherent commit. GitHub credentials are never placed in the Codex environment. Changes to `.github/*`, `.git/*`, `AGENTS.md`, `CLAUDE.md`, and `.gitmodules` are blocked. A remote non-fast-forward push is a failure, never a reason to force-push.
+
+When the implementation reports complete, the PR intentionally remains a **draft** for review rather than being merged or silently marked ready.
+
+Inspect current work with:
+
+```sh
+.venv/bin/maintainerd implementations
+```
+
 ## Subscription-only behavior
 
 The controller requires a positive ChatGPT login status. It removes API keys and other provider credentials from the Codex process environment, enforces `forced_login_method="chatgpt"`, and uses the OpenAI provider. It does not implement an API client or paid API fallback.
@@ -214,7 +267,7 @@ After manual checks, one simple loop can handle both proactive exploration and r
 .venv/bin/maintainerd serve mira --every-hours 12 --poll-seconds 300
 ```
 
-Every five minutes it checks the GitHub threads Mira created or joined. Polls with no new external comments cost no Codex usage. Independently, Mira receives a proactive exploration wake every twelve hours even when nothing happened on GitHub.
+Every five minutes it checks Mira's GitHub threads. Polls with nothing to answer cost no Codex usage. If an approved implementation is active, each poll may perform one additional implementation step and push one visible commit; proactive exploration is paused until that implementation is complete or blocked. Otherwise Mira receives a proactive exploration wake every twelve hours even when nothing happened on GitHub.
 
 This runs in the foreground. If no previous exploration exists, the first inspection is immediate. Otherwise the next exploration is based on the last recorded attempt, so restarting does not immediately spend another run. Runtime errors stop the loop instead of retry-burning allowance. Ctrl+C stops the loop and terminates an active Codex process group. Nothing installs itself into systemd yet.
 
@@ -261,9 +314,9 @@ The open draft PR is the implementation lease. No manager agent allocates work a
 
 ## Next milestones
 
-1. Add explicit human approval state to proposal threads.
-2. Add approved-work implementation using the documented claim-first protocol: atomic canonical branch claim, empty claim commit, **draft PR before code**, then incremental pushed commits in an isolated task worktree.
-3. Add PR review/revision loops while keeping human merging as the default.
+1. Exercise the live approval -> claim -> draft PR -> incremental commit loop on a real issue and tune the implementation prompt.
+2. Add PR review/revision loops and CI-aware follow-up while keeping human merging as the default.
+3. Add stale-claim recovery for claim-only branches whose controller died before creating a PR.
 4. Then add a second independent maintainer identity and optionally another machine.
 
 The contributor's purpose remains the same across milestones: notice useful work, investigate it, discuss when appropriate, and continue over time. The surrounding software should stay small enough to understand.

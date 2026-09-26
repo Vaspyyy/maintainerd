@@ -111,7 +111,7 @@ class State:
         if self.home in (Path("/"), Path.home().resolve()):
             raise Error("Use a dedicated maintainerd data directory, not your home or filesystem root.")
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for subdirectory in ("repos", "runs", "threads", "workspaces"):
+        for subdirectory in ("repos", "runs", "threads", "implementations", "workspaces"):
             (self.home / subdirectory).mkdir(exist_ok=True, mode=0o700)
         config_path = self.home / "config.toml"
         try:
@@ -125,7 +125,7 @@ class State:
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=WAL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4):
+        if version not in (0, 1, 2, 3, 4, 5):
             self.db.close()
             raise Error(f"State schema {version} is newer than this maintainerd supports.")
         self.db.executescript('''
@@ -210,12 +210,44 @@ class State:
                 reply_comment_id INTEGER,
                 reply_url TEXT
             );
+            CREATE TABLE IF NOT EXISTS implementations (
+                id INTEGER PRIMARY KEY,
+                maintainer TEXT NOT NULL REFERENCES maintainers(name),
+                repository TEXT NOT NULL,
+                issue_number INTEGER NOT NULL,
+                branch TEXT NOT NULL,
+                status TEXT NOT NULL,
+                claim_id TEXT NOT NULL,
+                claim_commit_sha TEXT,
+                pr_number INTEGER,
+                pr_url TEXT,
+                approval_comment_id INTEGER NOT NULL,
+                approved_by TEXT NOT NULL,
+                base_sha TEXT,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(repository, issue_number)
+            );
+            CREATE TABLE IF NOT EXISTS implementation_steps (
+                id TEXT PRIMARY KEY,
+                implementation_id INTEGER NOT NULL REFERENCES implementations(id),
+                maintainer TEXT NOT NULL REFERENCES maintainers(name),
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                base_sha TEXT,
+                commit_sha TEXT,
+                result TEXT,
+                error TEXT,
+                usage TEXT,
+                invoked INTEGER NOT NULL DEFAULT 0
+            );
             INSERT OR IGNORE INTO proposal_routes(
                 run_id,finding_index,repository,issue_number,issue_url,title,mode,comment_id,published_at
             )
             SELECT run_id,finding_index,repository,issue_number,issue_url,title,'created',NULL,published_at
             FROM proposal_publications;
-            PRAGMA user_version=4;
+            PRAGMA user_version=5;
         ''')
 
     def close(self) -> None:
@@ -273,7 +305,11 @@ class State:
             "SELECT count(*) FROM thread_turns WHERE invoked=1 AND substr(started_at,1,10)=?",
             (utcnow()[:10],),
         ).fetchone()[0]
-        return max(0, self.config.max_runs_per_day - used_runs - used_threads)
+        used_steps = self.db.execute(
+            "SELECT count(*) FROM implementation_steps WHERE invoked=1 AND substr(started_at,1,10)=?",
+            (utcnow()[:10],),
+        ).fetchone()[0]
+        return max(0, self.config.max_runs_per_day - used_runs - used_threads - used_steps)
 
 
 def default_home() -> Path:

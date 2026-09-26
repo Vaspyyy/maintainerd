@@ -94,7 +94,7 @@ class DiscussionTests(unittest.TestCase):
         self.assertEqual(discussion.parse(json.dumps(NO_REPLY))["action"], "no_reply")
 
     def test_bot_comments_are_inputs_but_self_comments_are_ignored(self):
-        active = publisher.Session("owner/repo", "token", "mira-maintains[bot]")
+        active = publisher.Session("owner/repo", "token", "mira-maintains[bot]", {"issues":"write"})
         comments = [
             {"id": 1, "body": "my own prior reply", "created_at": "2026-01-01",
              "user": {"login": "mira-maintains[bot]", "type": "Bot"}},
@@ -147,7 +147,7 @@ class DiscussionTests(unittest.TestCase):
     def test_sync_wakes_on_human_comment_and_posts_validated_reply(
         self, session, issue_thread, post_comment, execute, preflight
     ):
-        active = publisher.Session("owner/repo", "token", "mira-maintains[bot]")
+        active = publisher.Session("owner/repo", "token", "mira-maintains[bot]", {"issues":"write"})
         session.return_value = active
         comments = [{
             "id": 100,
@@ -191,7 +191,7 @@ class DiscussionTests(unittest.TestCase):
     @patch("maintainerd.discussion.publisher.issue_thread")
     @patch("maintainerd.discussion.publisher.session")
     def test_self_comment_does_not_spend_model_run(self, session, issue_thread):
-        session.return_value = publisher.Session("owner/repo", "token", "mira-maintains[bot]")
+        session.return_value = publisher.Session("owner/repo", "token", "mira-maintains[bot]", {"issues":"write"})
         issue_thread.return_value = self.thread([{
             "id": 200,
             "body": "self",
@@ -212,7 +212,7 @@ class DiscussionTests(unittest.TestCase):
     def test_no_reply_marks_comment_processed_without_posting(
         self, session, issue_thread, post_comment, execute, preflight
     ):
-        session.return_value = publisher.Session("owner/repo", "token", "mira-maintains[bot]")
+        session.return_value = publisher.Session("owner/repo", "token", "mira-maintains[bot]", {"issues":"write"})
         issue_thread.return_value = self.thread([{
             "id": 300,
             "body": "Sounds good.",

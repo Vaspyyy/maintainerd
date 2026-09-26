@@ -92,7 +92,7 @@ class Fixture(unittest.TestCase):
         self.fake = self.root / "codex"
         constants = {"BEHAVIOR": str(self.behavior), "TRACE": str(self.trace),
                      "PROMPT": str(self.root / "sent-prompt"), "MARKER": str(self.marker),
-                     "RESULT": RESULT, "HELP": " ".join(codex.REQUIRED_EXEC_FLAGS) + " --strict-config"}
+                     "RESULT": RESULT, "HELP": " ".join(codex.REQUIRED_EXEC_FLAGS) + " --strict-config workspace-write"}
         self.fake.write_text("#!" + sys.executable + "\n" + "\n".join(f"{k} = {v!r}" for k, v in constants.items()) + "\n" + FAKE_CODEX)
         self.fake.chmod(0o700)
         self.state.config = replace(self.state.config, codex_binary=str(self.fake), include_github=False)
@@ -385,6 +385,19 @@ class ContractTests(unittest.TestCase):
         self.assertIn("features.hooks=false", args)
         self.assertIn("--ignore-user-config", args)
         self.assertEqual(args[-1], "-")
+
+    def test_workspace_write_is_explicit_and_scoped(self):
+        args = codex.argv(
+            Config(),
+            Path("/tmp/control"),
+            Path("/tmp/artifacts"),
+            sandbox="workspace-write",
+            workspace=Path("/tmp/workspace"),
+        )
+        self.assertEqual(args[args.index("--sandbox") + 1], "workspace-write")
+        self.assertEqual(args[args.index("--cd") + 1], "/tmp/workspace")
+        self.assertNotIn("--full-auto", args)
+        self.assertNotIn("--yolo", args)
 
     def test_explicit_model(self):
         args = codex.argv(Config(model="test-model"), Path("/tmp/control"), Path("/tmp/artifacts"))

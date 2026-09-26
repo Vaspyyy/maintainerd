@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -93,6 +94,91 @@ def prepare(state: State, repository: dict, run_id: str) -> tuple[Path, str, str
     git(["--git-dir", str(bare), "worktree", "add", "--detach", str(workspace), sha])
     history = git(["log", "-20", "--format=%h %aI %s"], cwd=workspace)
     return workspace, sha, history
+
+
+def prepare_remote_branch(
+    state: State,
+    repository: dict,
+    branch: str,
+    task_id: str,
+) -> tuple[Path, str, str]:
+    bare = state.home / "repos" / f"{repository['name']}.git"
+    tracking = f"refs/maintainerd/{task_id}"
+    git([
+        "--git-dir", str(bare), "fetch", "--no-tags", "origin",
+        f"+refs/heads/{branch}:{tracking}",
+    ])
+    sha = git(["--git-dir", str(bare), "rev-parse", "--verify", f"{tracking}^{{commit}}"]).strip()
+    workspace = state.home / "workspaces" / task_id
+    git(["--git-dir", str(bare), "worktree", "add", "--detach", str(workspace), sha])
+    history = git(["log", "-20", "--format=%h %aI %s"], cwd=workspace)
+    return workspace, sha, history
+
+
+def changed_paths(workspace: Path) -> list[str]:
+    tracked = git(["diff", "--name-only", "HEAD"], cwd=workspace).splitlines()
+    staged = git(["diff", "--cached", "--name-only", "HEAD"], cwd=workspace).splitlines()
+    untracked = git(["ls-files", "--others", "--exclude-standard"], cwd=workspace).splitlines()
+    return sorted({path for path in [*tracked, *staged, *untracked] if path})
+
+
+def commit_all(workspace: Path, message: str, author_name: str) -> str:
+    if not message.strip() or "\n" in message or len(message) > 120:
+        raise Error("Implementation commit message must be one nonempty line up to 120 characters.")
+    git(["add", "-A"], cwd=workspace)
+    git([
+        "-c", f"user.name={author_name}",
+        "-c", "user.email=maintainerd@users.noreply.github.com",
+        "commit", "-m", message,
+    ], cwd=workspace)
+    return git(["rev-parse", "HEAD"], cwd=workspace).strip()
+
+
+def push_head(
+    workspace: Path,
+    repository: str,
+    branch: str,
+    token: str,
+) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise Error("Invalid GitHub repository for push.")
+    if not re.fullmatch(r"[A-Za-z0-9._/-]+", branch) or branch.startswith("/") or ".." in branch:
+        raise Error("Invalid branch name for push.")
+    with tempfile.TemporaryDirectory(prefix="maintainerd-askpass-", dir="/tmp") as directory:
+        helper = Path(directory) / "askpass.sh"
+        helper.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  *Username*) printf '%s\\n' \"$MAINTAINERD_GIT_USER\" ;;\n"
+            "  *) printf '%s\\n' \"$MAINTAINERD_GIT_TOKEN\" ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        helper.chmod(0o700)
+        env = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
+        env.update(
+            GIT_ASKPASS=str(helper),
+            GIT_TERMINAL_PROMPT="0",
+            GIT_OPTIONAL_LOCKS="0",
+            MAINTAINERD_GIT_USER="x-access-token",
+            MAINTAINERD_GIT_TOKEN=token,
+        )
+        command(
+            [
+                "git",
+                "-c", "core.hooksPath=/dev/null",
+                "push",
+                "--porcelain",
+                f"https://github.com/{repository}.git",
+                f"HEAD:refs/heads/{branch}",
+            ],
+            cwd=workspace,
+            env=env,
+            timeout=120,
+        )
 
 
 def unchanged(workspace: Path, sha: str) -> bool:

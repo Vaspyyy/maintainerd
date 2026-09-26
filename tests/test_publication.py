@@ -71,12 +71,12 @@ class PublicationTests(unittest.TestCase):
         publisher._SESSION_CACHE.clear()
 
     def active(self):
-        return publisher.Session("owner/repo", "ephemeral", "mira-maintains[bot]")
+        return publisher.Session("owner/repo", "ephemeral", "mira-maintains[bot]", {"issues":"write","contents":"write","pull_requests":"write"})
 
     def test_schema_migrated_for_coordination(self):
         version = self.state.db.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 4)
-        for table in ("proposal_routes", "thread_events", "thread_turns"):
+        self.assertEqual(version, 5)
+        for table in ("proposal_routes", "thread_events", "thread_turns", "implementations", "implementation_steps"):
             self.assertEqual(
                 self.state.db.execute(
                     "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", (table,)

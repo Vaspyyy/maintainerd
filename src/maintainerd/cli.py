@@ -59,9 +59,12 @@ def parser() -> argparse.ArgumentParser:
     show.add_argument("--json", action="store_true")
     publish = commands.add_parser("publish", help="Route one completed proposal into GitHub discussion")
     publish.add_argument("run", nargs="?", default="latest")
-    inbox = commands.add_parser("inbox", help="Fetch new comments and let a maintainer respond when useful")
+    inbox = commands.add_parser(
+        "inbox", help="Fetch comments, approvals, and continue one implementation step"
+    )
     inbox.add_argument("name")
     inbox.add_argument("--max-threads", type=int, default=2)
+    commands.add_parser("implementations", help="List claimed implementation work and draft PRs")
     memories = commands.add_parser("memory", help="Inspect observations or add explicit human guidance").add_subparsers(dest="action", required=True)
     add_note = memories.add_parser("add")
     add_note.add_argument("name")
@@ -82,7 +85,10 @@ def parser() -> argparse.ArgumentParser:
 
 def doctor(state: State) -> int:
     failed = False
-    print(f"Data: {state.home}\nPython: {sys.version.split()[0]}\nMode: read-only Codex; optional host-side proposal issues")
+    print(
+        f"Data: {state.home}\nPython: {sys.version.split()[0]}\n"
+        "Mode: read-only exploration/discussion; approved implementation uses workspace-write"
+    )
     try:
         print("PASS " + repo.git(["--version"]).strip())
     except Error as exc:
@@ -126,9 +132,18 @@ def doctor(state: State) -> int:
         try:
             active = publisher.session_for(state, item["name"], item["github"])
             config = publisher.config_for(state, item["name"])
+            implementation_ready = (
+                active.permissions.get("contents") == "write"
+                and active.permissions.get("pull_requests") == "write"
+            )
+            capability = (
+                "issue discussions + draft PR implementation"
+                if implementation_ready else
+                "issue discussions only"
+            )
             print(
                 f"PASS GitHub App {config.github_app_id} ({active.bot_login}) can write "
-                f"issue discussions in {item['github']} for {item['name']}"
+                f"{capability} in {item['github']} for {item['name']}"
             )
             bot_owners.setdefault(active.bot_login, []).append(item["name"])
         except Error as exc:
@@ -167,6 +182,15 @@ def serve(state: State, maintainer: str, hours: float, poll_seconds: int) -> Non
         if monotonic >= next_poll:
             discussion.sync_once(state, maintainer)
             next_poll = time.monotonic() + poll_seconds
+
+        active_implementation = state.rows(
+            "SELECT id FROM implementations WHERE maintainer=? "
+            "AND status IN ('draft','working') LIMIT 1",
+            (maintainer,),
+        )
+        if active_implementation:
+            time.sleep(min(30.0, max(1.0, next_poll - time.monotonic())))
+            continue
 
         rows = state.rows(
             "SELECT started_at FROM runs WHERE maintainer=? AND invoked=1 "
@@ -305,6 +329,18 @@ def dispatch(args: argparse.Namespace, state: State) -> int:
             processed = discussion.sync_once(state, args.name, max_threads=args.max_threads)
             if not processed:
                 print("Inbox checked; no discussion turn was needed.")
+        case "implementations":
+            rows = state.rows(
+                "SELECT maintainer,repository,issue_number,status,branch,pr_number,pr_url,updated_at "
+                "FROM implementations ORDER BY updated_at DESC"
+            )
+            for item in rows:
+                print(
+                    f"{item['maintainer']}  {item['repository']}#{item['issue_number']}  "
+                    f"{item['status']:8s}  PR #{item['pr_number']}  {item['pr_url']}"
+                )
+            if not rows:
+                print("No implementation claims yet.")
         case "memory":
             state.one("maintainers", args.name)
             if args.action == "list":

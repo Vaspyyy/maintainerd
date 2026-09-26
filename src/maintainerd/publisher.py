@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from . import report
@@ -38,11 +39,18 @@ STOPWORDS = {
 }
 
 
+class GithubError(Error):
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
 @dataclass(frozen=True)
 class Session:
     repository: str
     token: str
     bot_login: str
+    permissions: dict[str, str]
 
 
 def configured(config: Config) -> bool:
@@ -139,7 +147,7 @@ def _api(method: str, path: str, authorization: str, payload: dict | None = None
                 message += f": {parsed['message'][:300]}"
         except Exception:
             pass
-        raise Error(f"GitHub API {method} {path} failed ({message}).") from exc
+        raise GithubError(f"GitHub API {method} {path} failed ({message}).", exc.code) from exc
     except (URLError, TimeoutError, OSError) as exc:
         raise Error(f"GitHub API {method} {path} was unavailable.") from exc
     if not raw:
@@ -183,7 +191,12 @@ def session(config: Config, repository: str) -> Session:
     if not isinstance(app, dict) or not isinstance(app.get("slug"), str):
         raise Error("GitHub App identity could not be resolved.")
     access = _installation_access(config, repository, app_jwt)
-    active = Session(repository, access["token"], f"{app['slug']}[bot]")
+    active = Session(
+        repository,
+        access["token"],
+        f"{app['slug']}[bot]",
+        dict(access.get("permissions") or {}),
+    )
     # Installation tokens normally last an hour. Reauthenticate early rather
     # than persisting them or relying on exact remote expiry parsing.
     _SESSION_CACHE[cache_key] = (time.monotonic() + 45 * 60, active)
@@ -192,7 +205,16 @@ def session(config: Config, repository: str) -> Session:
 
 def preflight(config: Config, repository: str) -> str:
     active = session(config, repository)
-    return f"GitHub App {config.github_app_id} ({active.bot_login}) can write issue discussions in {repository}"
+    extras = []
+    if active.permissions.get("contents") == "write":
+        extras.append("contents")
+    if active.permissions.get("pull_requests") == "write":
+        extras.append("pull requests")
+    suffix = f"; implementation permissions: {', '.join(extras)}" if extras else ""
+    return (
+        f"GitHub App {config.github_app_id} ({active.bot_login}) can write issue discussions "
+        f"in {repository}{suffix}"
+    )
 
 
 def session_for(state: State, maintainer: str, repository: str) -> Session:
@@ -201,6 +223,101 @@ def session_for(state: State, maintainer: str, repository: str) -> Session:
 
 def preflight_for(state: State, maintainer: str, repository: str) -> str:
     return preflight(config_for(state, maintainer), repository)
+
+
+def require_implementation_permissions(active: Session) -> None:
+    missing = [
+        label
+        for key, label in (("contents", "Contents: Read and write"),
+                           ("pull_requests", "Pull requests: Read and write"))
+        if active.permissions.get(key) != "write"
+    ]
+    if missing:
+        raise Error("GitHub App is not implementation-ready; grant " + " and ".join(missing) + ".")
+
+
+def get_ref(active: Session, branch: str) -> dict | None:
+    encoded = quote(branch, safe="")
+    try:
+        value = _api("GET", f"/repos/{active.repository}/git/ref/heads/{encoded}", active.token)
+    except GithubError as exc:
+        if exc.status == 404:
+            return None
+        raise
+    if not isinstance(value, dict):
+        raise Error("GitHub returned an invalid branch reference.")
+    return value
+
+
+def get_git_commit(active: Session, sha: str) -> dict:
+    value = _api("GET", f"/repos/{active.repository}/git/commits/{sha}", active.token)
+    if not isinstance(value, dict):
+        raise Error("GitHub returned an invalid Git commit.")
+    return value
+
+
+def create_empty_commit(active: Session, base_sha: str, message: str) -> dict:
+    base = get_git_commit(active, base_sha)
+    tree = base.get("tree") or {}
+    tree_sha = tree.get("sha")
+    if not isinstance(tree_sha, str):
+        raise Error("Base commit did not expose a tree SHA.")
+    value = _api(
+        "POST",
+        f"/repos/{active.repository}/git/commits",
+        active.token,
+        {"message": message, "tree": tree_sha, "parents": [base_sha]},
+    )
+    if not isinstance(value, dict) or not isinstance(value.get("sha"), str):
+        raise Error("GitHub did not return the empty claim commit.")
+    return value
+
+
+def create_ref(active: Session, branch: str, sha: str) -> dict:
+    value = _api(
+        "POST",
+        f"/repos/{active.repository}/git/refs",
+        active.token,
+        {"ref": f"refs/heads/{branch}", "sha": sha},
+    )
+    if not isinstance(value, dict):
+        raise Error("GitHub did not return the created branch reference.")
+    return value
+
+
+def pulls_for_head(active: Session, branch: str) -> list[dict]:
+    owner = active.repository.split("/", 1)[0]
+    query = urlencode({"state": "all", "head": f"{owner}:{branch}", "per_page": 20})
+    value = _api("GET", f"/repos/{active.repository}/pulls?{query}", active.token)
+    if not isinstance(value, list):
+        raise Error("GitHub returned an invalid pull-request list.")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def create_draft_pr(active: Session, *, branch: str, base: str, title: str, body: str) -> dict:
+    value = _api(
+        "POST",
+        f"/repos/{active.repository}/pulls",
+        active.token,
+        {
+            "title": title,
+            "head": branch,
+            "base": base,
+            "body": body,
+            "draft": True,
+            "maintainer_can_modify": True,
+        },
+    )
+    if not isinstance(value, dict) or type(value.get("number")) is not int:
+        raise Error("GitHub did not return the created draft pull request.")
+    return value
+
+
+def pull_request(active: Session, number: int) -> dict:
+    value = _api("GET", f"/repos/{active.repository}/pulls/{number}", active.token)
+    if not isinstance(value, dict):
+        raise Error("GitHub returned an invalid pull request.")
+    return value
 
 
 def issue_thread(active: Session, issue_number: int) -> dict:
