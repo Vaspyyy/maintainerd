@@ -170,6 +170,32 @@ class ImplementationTests(unittest.TestCase):
             self.state.rows("SELECT * FROM implementations"), []
         )
 
+    @patch("maintainerd.implementation.ensure_draft")
+    def test_losing_parallel_claim_is_coordination_not_runtime_failure(self, ensure_draft):
+        with self.state.db:
+            self.state.db.execute(
+                "INSERT INTO thread_events("
+                "maintainer,repository,issue_number,comment_id,author,author_type,body,created_at,status"
+                ") VALUES (?,?,?,?,?,?,?,?,?)",
+                ("mira", "owner/repo", 11, 501, "owner", "User", "implement it", "2026-01-02", "pending"),
+            )
+        event = self.state.rows("SELECT * FROM thread_events WHERE comment_id=501")[0]
+        ensure_draft.side_effect = implementation.ClaimLost(
+            "Issue #11 is already claimed on maintainerd/issue-11 by noah."
+        )
+        self.assertIsNone(
+            implementation.authorize(
+                self.state, self.maintainer, self.repository, self.active, 11, [event]
+            )
+        )
+        row = self.state.rows("SELECT * FROM thread_events WHERE comment_id=501")[0]
+        self.assertEqual(row["status"], "processed")
+        self.assertEqual(row["turn_id"], "implementation:claimed-elsewhere")
+        self.assertEqual(
+            implementation.approval_history(self.state, "mira", "owner/repo", 11),
+            [],
+        )
+
     def _insert_implementation(self):
         now = "2026-01-01T00:00:00+00:00"
         with self.state.db:
@@ -340,6 +366,21 @@ class ImplementationTests(unittest.TestCase):
         refresh.assert_called_once()
         mark_ready.assert_called_once_with(self.active, 12)
         run_step.assert_not_called()
+
+    @patch("maintainerd.implementation.publisher.require_implementation_permissions")
+    @patch("maintainerd.implementation.publisher.session_for")
+    @patch("maintainerd.implementation.run_step")
+    def test_unlimited_local_cap_still_continues_active_implementation(
+        self, run_step, session_for, require_permissions
+    ):
+        impl = self._insert_implementation()
+        self.state.config = self.state.config.__class__(
+            **{**self.state.config.__dict__, "max_runs_per_day": 0}
+        )
+        session_for.return_value = self.active
+        self.assertTrue(implementation.continue_one(self.state, "mira", 1))
+        run_step.assert_called_once()
+        require_permissions.assert_called_once_with(self.active)
 
     def test_pr_body_hides_coordination_plumbing_below_engineering_context(self):
         issue = {

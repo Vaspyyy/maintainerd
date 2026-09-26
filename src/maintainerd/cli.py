@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import selectors
 import shutil
+import subprocess
 import signal
 import sqlite3
 import sys
@@ -85,6 +87,10 @@ def parser() -> argparse.ArgumentParser:
     cadence.add_argument("--every-hours", type=float)
     cadence.add_argument("--every-minutes", type=float)
     serve.add_argument("--poll-seconds", type=int, default=300)
+    worker = commands.add_parser("_serve-worker", help=argparse.SUPPRESS)
+    worker.add_argument("name")
+    worker.add_argument("--interval-seconds", type=float, required=True)
+    worker.add_argument("--poll-seconds", type=int, required=True)
     return root
 
 
@@ -219,6 +225,98 @@ def _exploration_delay(state: State, maintainer: str, interval_seconds: float) -
     return (due - datetime.now(timezone.utc)).total_seconds()
 
 
+def _serve_worker_loop(
+    state: State,
+    maintainer: str,
+    interval_seconds: float,
+    poll_seconds: int,
+) -> None:
+    if not 60 <= interval_seconds <= 168 * 60 * 60:
+        raise Error("Exploration interval must be between 1 minute and 168 hours.")
+    if not 15 <= poll_seconds <= 3600:
+        raise Error("--poll-seconds must be between 15 and 3600.")
+    state.one("maintainers", maintainer)
+    cadence = (
+        f"{interval_seconds / 60:g}m"
+        if interval_seconds < 3600
+        else f"{interval_seconds / 3600:g}h"
+    )
+    with state.lock(f"serve-{maintainer}") as _serve_lock_fd:
+        print(
+            f"worker online: explore every {cadence}, poll every {poll_seconds}s",
+            flush=True,
+        )
+        next_poll = 0.0
+        while True:
+            if (state.home / "PAUSED").exists():
+                time.sleep(15)
+                continue
+
+            monotonic = time.monotonic()
+            if monotonic >= next_poll:
+                discussion.sync_once(state, maintainer)
+                next_poll = time.monotonic() + poll_seconds
+
+            active_implementation = state.rows(
+                "SELECT id FROM implementations WHERE maintainer=? "
+                "AND status IN ('draft','working') LIMIT 1",
+                (maintainer,),
+            )
+            if active_implementation:
+                time.sleep(min(15.0, max(0.25, next_poll - time.monotonic())))
+                continue
+
+            delay = _exploration_delay(state, maintainer, interval_seconds)
+            if delay <= 0 and state.can_run():
+                cycle.wake(state, maintainer, "scheduled")
+                continue
+
+            waits = [max(0.25, next_poll - time.monotonic())]
+            if state.can_run():
+                waits.append(max(0.25, delay))
+            time.sleep(min(15.0, *waits))
+
+
+def _worker_argv(
+    state: State,
+    maintainer: str,
+    interval_seconds: float,
+    poll_seconds: int,
+) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "maintainerd",
+        "--home",
+        str(state.home),
+        "_serve-worker",
+        maintainer,
+        "--interval-seconds",
+        str(interval_seconds),
+        "--poll-seconds",
+        str(poll_seconds),
+    ]
+
+
+def _stop_workers(workers: dict[str, subprocess.Popen]) -> None:
+    for process in workers.values():
+        if process.poll() is None:
+            process.terminate()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if all(process.poll() is not None for process in workers.values()):
+            return
+        time.sleep(0.1)
+    for process in workers.values():
+        if process.poll() is None:
+            process.kill()
+    for process in workers.values():
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def serve(
     state: State,
     maintainers: list[str] | str,
@@ -238,8 +336,6 @@ def serve(
         state.one("maintainers", maintainer)
     _serve_identity_check(state, maintainers)
 
-    next_poll = {maintainer: 0.0 for maintainer in maintainers}
-    cursor = 0
     cadence = (
         f"{interval_seconds / 60:g}m"
         if interval_seconds < 3600
@@ -247,61 +343,61 @@ def serve(
     )
     budget = "unlimited" if state.remaining() is None else f"{state.remaining()} starts left today"
     print(
-        f"Foreground loop for {', '.join(maintainers)}: explore each every {cadence}, "
-        f"check discussions every {poll_seconds}s; local budget {budget}. Ctrl+C stops it.",
+        f"Parallel foreground supervisor: {len(maintainers)} worker(s), "
+        f"explore each every {cadence}, poll every {poll_seconds}s; "
+        f"local budget {budget}. Ctrl+C stops all workers.",
         flush=True,
     )
 
-    while True:
-        if (state.home / "PAUSED").exists():
-            time.sleep(15)
-            continue
-
-        ordered = maintainers[cursor:] + maintainers[:cursor]
-        did_work = False
-
-        # Reactive work gets first priority. Each maintainer gets one inbox pass
-        # before proactive exploration is considered.
-        for maintainer in ordered:
-            monotonic = time.monotonic()
-            if monotonic < next_poll[maintainer]:
-                continue
-            discussion.sync_once(state, maintainer)
-            next_poll[maintainer] = time.monotonic() + poll_seconds
-            cursor = (maintainers.index(maintainer) + 1) % len(maintainers)
-            did_work = True
-
-        # Run at most one proactive exploration before restarting the fairness
-        # loop. A due maintainer with active implementation work is skipped.
-        if state.can_run():
-            ordered = maintainers[cursor:] + maintainers[:cursor]
-            for maintainer in ordered:
-                active_implementation = state.rows(
-                    "SELECT id FROM implementations WHERE maintainer=? "
-                    "AND status IN ('draft','working') LIMIT 1",
-                    (maintainer,),
-                )
-                if active_implementation:
-                    continue
-                if _exploration_delay(state, maintainer, interval_seconds) <= 0:
-                    cycle.wake(state, maintainer, "scheduled")
-                    cursor = (maintainers.index(maintainer) + 1) % len(maintainers)
-                    did_work = True
-                    break
-
-        if did_work:
-            continue
-
-        waits = [
-            max(0.25, next_poll[maintainer] - time.monotonic())
-            for maintainer in maintainers
-        ]
-        if state.can_run():
-            waits.extend(
-                max(0.25, _exploration_delay(state, maintainer, interval_seconds))
-                for maintainer in maintainers
+    selector = selectors.DefaultSelector()
+    workers: dict[str, subprocess.Popen] = {}
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    try:
+        for maintainer in maintainers:
+            process = subprocess.Popen(
+                _worker_argv(state, maintainer, interval_seconds, poll_seconds),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+                start_new_session=True,
             )
-        time.sleep(min(15.0, *waits))
+            if process.stdout is None:
+                raise Error(f"Could not capture {maintainer} worker output.")
+            workers[maintainer] = process
+            selector.register(process.stdout, selectors.EVENT_READ, maintainer)
+            print(f"[{maintainer}] worker started (pid {process.pid})", flush=True)
+
+        while True:
+            for key, _mask in selector.select(timeout=0.5):
+                stream = key.fileobj
+                maintainer = key.data
+                line = stream.readline()
+                if line:
+                    print(f"[{maintainer}] {line.rstrip()}", flush=True)
+                else:
+                    try:
+                        selector.unregister(stream)
+                    except Exception:
+                        pass
+
+            for maintainer, process in workers.items():
+                returncode = process.poll()
+                if returncode is None:
+                    continue
+                # Drain anything that arrived between the last select and exit.
+                if process.stdout is not None:
+                    for line in process.stdout:
+                        print(f"[{maintainer}] {line.rstrip()}", flush=True)
+                raise Error(
+                    f"{maintainer} worker exited with status {returncode}; "
+                    "stopping the parallel supervisor."
+                )
+    finally:
+        selector.close()
+        _stop_workers(workers)
 
 
 def dispatch(args: argparse.Namespace, state: State) -> int:
@@ -413,7 +509,7 @@ def dispatch(args: argparse.Namespace, state: State) -> int:
                 if not rows:
                     raise Error("No completed report exists to publish.")
                 run_id = rows[0]["id"]
-            with state.lock():
+            with state.lock("publication", wait_seconds=120):
                 publication = publisher.publish_run(state, run_id)
             print(f"Published proposal #{publication['issue_number']}: {publication['issue_url']}")
         case "inbox":
@@ -458,6 +554,8 @@ def dispatch(args: argparse.Namespace, state: State) -> int:
         case "serve":
             interval = _serve_interval_seconds(args.every_hours, args.every_minutes)
             serve(state, args.names, interval, args.poll_seconds)
+        case "_serve-worker":
+            _serve_worker_loop(state, args.name, args.interval_seconds, args.poll_seconds)
     return 0
 
 

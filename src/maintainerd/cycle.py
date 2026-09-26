@@ -76,7 +76,7 @@ few concise, sourced observations as memory_notes, never invented human policy.
 
 def wake(state: State, maintainer_name: str, reason: str = "exploration", *, dry_run: bool = False,
          keep_worktree: bool = False) -> str:
-    with state.lock() as lock_fd:
+    with state.lock(f"maintainer-{maintainer_name}") as lock_fd:
         maintainer = state.one("maintainers", maintainer_name)
         repository = state.one("repositories", maintainer["repository"])
         if not dry_run:
@@ -89,9 +89,12 @@ def wake(state: State, maintainer_name: str, reason: str = "exploration", *, dry
             version = "not invoked (dry run)"
         # Holding the same lock means no surviving worker owns an active cycle.
         with state.db:
-            state.db.execute("UPDATE runs SET status='interrupted', finished_at=?, "
-                             "error='Controller stopped before finalization; inspect artifacts.' "
-                             "WHERE status IN ('preparing','running')", (utcnow(),))
+            state.db.execute(
+                "UPDATE runs SET status='interrupted', finished_at=?, "
+                "error='Controller stopped before finalization; inspect artifacts.' "
+                "WHERE maintainer=? AND status IN ('preparing','running')",
+                (utcnow(), maintainer_name),
+            )
         run_id = uuid.uuid4().hex[:16]
         artifacts = state.home / "runs" / run_id
         artifacts.mkdir(mode=0o700)
@@ -143,7 +146,8 @@ def wake(state: State, maintainer_name: str, reason: str = "exploration", *, dry
             publication = None
             if result["outcome"] == "propose" and state.config.publish_proposals:
                 try:
-                    publication = publisher.publish_run(state, run_id)
+                    with state.lock("publication", wait_seconds=120):
+                        publication = publisher.publish_run(state, run_id)
                 except Error as exc:
                     write_json(artifacts / "publication-warning.json", {"message": str(exc)})
                     print(f"WARN proposal was not published: {exc}", flush=True)

@@ -87,11 +87,15 @@ def add(state: State, source: str, alias: str | None, branch: str | None,
 def prepare(state: State, repository: dict, run_id: str) -> tuple[Path, str, str]:
     bare = state.home / "repos" / f"{repository['name']}.git"
     branch = repository["branch"]
-    git(["--git-dir", str(bare), "fetch", "--no-tags", "origin",
-         f"+refs/heads/{branch}:refs/heads/{branch}"])
-    sha = git(["--git-dir", str(bare), "rev-parse", "--verify", f"refs/heads/{branch}^{{commit}}"] ).strip()
-    workspace = state.home / "workspaces" / run_id
-    git(["--git-dir", str(bare), "worktree", "add", "--detach", str(workspace), sha])
+    with state.lock(f"repo-{repository['name']}", wait_seconds=120):
+        git(["--git-dir", str(bare), "fetch", "--no-tags", "origin",
+             f"+refs/heads/{branch}:refs/heads/{branch}"])
+        sha = git([
+            "--git-dir", str(bare), "rev-parse", "--verify",
+            f"refs/heads/{branch}^{{commit}}",
+        ]).strip()
+        workspace = state.home / "workspaces" / run_id
+        git(["--git-dir", str(bare), "worktree", "add", "--detach", str(workspace), sha])
     history = git(["log", "-20", "--format=%h %aI %s"], cwd=workspace)
     return workspace, sha, history
 
@@ -104,13 +108,16 @@ def prepare_remote_branch(
 ) -> tuple[Path, str, str]:
     bare = state.home / "repos" / f"{repository['name']}.git"
     tracking = f"refs/maintainerd/{task_id}"
-    git([
-        "--git-dir", str(bare), "fetch", "--no-tags", "origin",
-        f"+refs/heads/{branch}:{tracking}",
-    ])
-    sha = git(["--git-dir", str(bare), "rev-parse", "--verify", f"{tracking}^{{commit}}"]).strip()
-    workspace = state.home / "workspaces" / task_id
-    git(["--git-dir", str(bare), "worktree", "add", "--detach", str(workspace), sha])
+    with state.lock(f"repo-{repository['name']}", wait_seconds=120):
+        git([
+            "--git-dir", str(bare), "fetch", "--no-tags", "origin",
+            f"+refs/heads/{branch}:{tracking}",
+        ])
+        sha = git([
+            "--git-dir", str(bare), "rev-parse", "--verify", f"{tracking}^{{commit}}"
+        ]).strip()
+        workspace = state.home / "workspaces" / task_id
+        git(["--git-dir", str(bare), "worktree", "add", "--detach", str(workspace), sha])
     history = git(["log", "-20", "--format=%h %aI %s"], cwd=workspace)
     return workspace, sha, history
 
@@ -188,4 +195,5 @@ def unchanged(workspace: Path, sha: str) -> bool:
 
 def cleanup(state: State, repository: dict, workspace: Path) -> None:
     bare = state.home / "repos" / f"{repository['name']}.git"
-    git(["--git-dir", str(bare), "worktree", "remove", str(workspace)])
+    with state.lock(f"repo-{repository['name']}", wait_seconds=120):
+        git(["--git-dir", str(bare), "worktree", "remove", str(workspace)])

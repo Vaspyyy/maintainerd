@@ -1,4 +1,4 @@
-# Milestone 3 validation
+# Milestone 4 validation
 
 ## Exercised locally
 
@@ -23,7 +23,8 @@ Covered cases include:
 - Per-maintainer GitHub App configuration overrides the global single-maintainer fallback, and the same external comment can be tracked independently by two maintainers.
 - Explicit implementation approval excludes casual design agreement, is limited to the repository owner, accepts natural permission phrasing such as `you may create a PR`, runs before model discussion, and can recover an already-processed approval from durable thread history.
 - Claim-first implementation tests cover canonical issue branches, draft-PR creation before writable turns, remote-claim loss without alternate branches, draft-state enforcement, workspace-write invocation, one coherent controller commit, final-commit completion, ready-for-review transition/reconciliation, non-force publication boundaries, and the shared launch budget.
-- Multi-maintainer scheduling covers multiple CLI names, minute-scale exploration cadence, distinct-bot identity enforcement, and round-robin serialized operation; `max_runs_per_day=0` is validated as an unlimited local cap.
+- Multi-maintainer scheduling covers multiple CLI names, minute-scale exploration cadence, distinct-bot identity enforcement, scoped per-maintainer locks, safe coexistence of different maintainer locks, module-based worker launch arguments, and `max_runs_per_day=0` as an unlimited local cap.
+- Parallel-safety regressions cover maintainer-scoped stale-run recovery and losing a remote implementation claim without crashing the competing worker. Shared bare-Git setup/cleanup and proposal publication are serialized separately from long model turns.
 
 Source compilation and a built-wheel/CLI smoke check are also part of the local validation procedure. The GitHub CI workflow runs the offline suite on Python 3.11 and 3.13.
 
@@ -36,6 +37,7 @@ Source compilation and a built-wheel/CLI smoke check are also part of the local 
 - Live GitHub discussion polling/replies from the test environment; those boundaries are mocked.
 - A live GitHub branch claim, installation-token Git push, or draft-PR creation from the test environment; GitHub write boundaries are mocked.
 - A real workspace-write Codex implementation turn on the user's repository.
+- Sustained three-way live Codex concurrency on the user's subscription; offline tests validate controller mechanics, not provider-side concurrency behavior.
 - Webhook delivery; foreground polling remains intentional for this milestone.
 
 ## Installation-side acceptance check
@@ -51,5 +53,6 @@ Source compilation and a built-wheel/CLI smoke check are also part of the local 
 9. Confirm `maintainerd doctor` reports draft-PR implementation capability after granting Contents and Pull requests read/write to the maintainer App.
 10. On a maintainer-owned issue, post an explicit repository-owner command such as `implement it`. Run `maintainerd inbox mira` and verify the canonical branch and **draft PR appear before any implementation commit**.
 11. Confirm each later inbox/serve poll adds at most one coherent commit to the same draft PR and never force-pushes. When implementation reports complete, confirm the PR description updates first and the PR is automatically marked ready for review, without merging.
+12. Run `maintainerd serve mira noah iris --every-minutes 1 --poll-seconds 15`. Confirm the supervisor prints separately prefixed worker output and that more than one Codex process can be active at once while Git worktree setup remains conflict-free.
 
 Passing the controller tests proves mechanics, not good autonomous judgment. Stop autonomous publishing, replies, or implementation if public project quality degrades.

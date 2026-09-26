@@ -332,7 +332,7 @@ def respond(
 def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> int:
     if not 1 <= max_threads <= 10:
         raise Error("max_threads must be between 1 and 10.")
-    with state.lock() as lock_fd:
+    with state.lock(f"maintainer-{maintainer_name}") as lock_fd:
         if (state.home / "PAUSED").exists():
             return 0
         maintainer = state.one("maintainers", maintainer_name)

@@ -9,7 +9,7 @@ No manager agent, fixed developer roles, API billing integration, Redis, databas
 Milestone 3 keeps exploration and discussion **read-only**, but adds an explicitly approved implementation path. The repository owner must use an implementation command in the issue thread; maintainerd then claims the canonical remote branch, creates a draft PR first, and only after that gives Codex a writable task worktree:
 
 ```text
-manual wake or optional interval
+manual wake, one-worker serve, or parallel multi-maintainer serve
     -> fetch a controller-owned repository copy
     -> create a detached worktree at a recorded commit
     -> collect recent commits and optional GitHub context
@@ -287,13 +287,17 @@ For an aggressive three-maintainer loop:
   --poll-seconds 30
 ```
 
-`--every-minutes` accepts 1 to 10080 minutes. Discussion polling accepts 15 to 3600 seconds. The scheduler is deliberately **serialized but round-robin**: only one Codex process owns the controller at a time, while Mira, Noah, and Iris rotate fairly through reactive work and proactive exploration. This preserves the single-host Git/SQLite safety model without requiring three fighting daemon processes.
+`--every-minutes` accepts 1 to 10080 minutes. Discussion polling accepts 15 to 3600 seconds. Multi-maintainer `serve` now launches **one real worker process per maintainer**. Mira, Noah, and Iris can therefore have three Codex turns in flight at the same time. The supervisor multiplexes their output back into one terminal and prefixes every worker line, for example `[mira]`, `[noah]`, and `[iris]`.
 
-Each maintainer has its own exploration clock. New maintainers are immediately due for a first inspection; afterward each is eligible again after the configured interval. Polls with nothing to answer cost no Codex usage. Active implementation work is continued through inbox polling, while that maintainer's proactive exploration is suppressed until the implementation is complete or blocked. Other maintainers keep exploring.
+Each maintainer has its own exploration clock and its own long-lived worker lock. New maintainers are immediately due for a first inspection; afterward each is eligible again after the configured interval. Polls with nothing to answer cost no Codex usage. Active implementation work is continued through inbox polling, while that maintainer's proactive exploration is suppressed until the implementation is complete or blocked. Other maintainers keep exploring in parallel.
 
-With a one-minute exploration interval and three maintainers, the scheduler will generally keep Codex busy continuously because model turns themselves take longer than the cadence. Use `max_runs_per_day = 0` if you intentionally want the local launch cap out of the way.
+The shared bare Git repository is protected only during short fetch/worktree-metadata operations, SQLite runs in WAL mode with a busy timeout, proposal publication is serialized so two simultaneous discoveries cannot race into duplicate issue creation, and implementation still uses the canonical remote branch as the cross-worker claim. Losing that claim is a normal coordination result rather than a worker failure.
 
-This runs in the foreground. Restarting preserves each maintainer's last-run timing instead of blindly spending another run. Runtime errors stop the group rather than silently retry-burning allowance. Ctrl+C stops the loop and terminates an active Codex process group. Nothing installs itself into systemd yet.
+With a one-minute exploration interval and three maintainers, there can be **three concurrent Codex processes**. Use `max_runs_per_day = 0` if you intentionally want the local launch cap out of the way. Codex itself or your subscription may still impose external concurrency/usage limits.
+
+This runs in the foreground. Restarting preserves each maintainer's last-run timing instead of blindly spending another run. If one worker exits unexpectedly, the supervisor stops the group rather than leaving a half-dead fleet. Ctrl+C terminates all worker controllers, and each controller stops its active Codex process group cleanly. Nothing installs itself into systemd yet.
+
+You may also run `serve mira`, `serve noah`, and `serve iris` in three separate terminals. Scoped per-maintainer locks make that safe on one host, but the single multi-name command is easier to supervise and gives you prefixed combined logs. Starting the same maintainer twice is refused by its worker lock.
 
 ```sh
 .venv/bin/maintainerd pause

@@ -53,6 +53,10 @@ FORBIDDEN_PREFIXES = (".github/", ".git/")
 FORBIDDEN_PATHS = {"AGENTS.md", "CLAUDE.md", ".gitmodules"}
 
 
+class ClaimLost(Error):
+    """Another maintainer won the canonical remote implementation branch."""
+
+
 def explicit_approval(body: str) -> bool:
     text = body.strip()
     return any(pattern.search(text) for pattern in APPROVAL_PATTERNS)
@@ -350,7 +354,7 @@ def ensure_draft(
         if recovered_claim_id:
             claim_id = recovered_claim_id
         if owner != maintainer["name"]:
-            raise Error(
+            raise ClaimLost(
                 f"Issue #{issue_number} is already claimed on {branch} by "
                 f"{owner or 'another maintainer'}. No competing branch was created."
             )
@@ -686,19 +690,37 @@ def authorize(
     issue_number: int,
     events: list[dict],
 ) -> dict | None:
+    approval = approval_event(events, active.repository)
+    if approval is None:
+        return None
+
     existing = state.rows(
         "SELECT * FROM implementations WHERE repository=? AND issue_number=?",
         (active.repository, issue_number),
     )
     if existing:
+        with state.db:
+            state.db.execute(
+                "UPDATE thread_events SET status='processed',processed_at=?,turn_id=? "
+                "WHERE id=?",
+                (utcnow(), f"implementation:{existing[0]['id']}", approval["id"]),
+            )
         return None
 
-    approval = approval_event(events, active.repository)
-    if approval is None:
+    try:
+        implementation = ensure_draft(
+            state, maintainer, repository, active, issue_number, approval
+        )
+    except ClaimLost as exc:
+        with state.db:
+            state.db.execute(
+                "UPDATE thread_events SET status='processed',processed_at=?,turn_id=? "
+                "WHERE id=?",
+                (utcnow(), "implementation:claimed-elsewhere", approval["id"]),
+            )
+        print(str(exc), flush=True)
         return None
-    implementation = ensure_draft(
-        state, maintainer, repository, active, issue_number, approval
-    )
+
     with state.db:
         state.db.execute(
             "UPDATE thread_events SET status='processed',processed_at=?,turn_id=? "
@@ -716,7 +738,8 @@ def approval_history(
 ) -> list[dict]:
     return state.rows(
         "SELECT * FROM thread_events WHERE maintainer=? AND repository=? "
-        "AND issue_number=? ORDER BY comment_id",
+        "AND issue_number=? AND (turn_id IS NULL OR turn_id NOT LIKE 'implementation:%') "
+        "ORDER BY comment_id",
         (maintainer, repository, issue_number),
     )
 
@@ -752,7 +775,7 @@ def continue_one(
         "ORDER BY updated_at, id LIMIT 1",
         (maintainer_name,),
     )
-    if not rows or not state.remaining():
+    if not rows or not state.can_run():
         return False
     implementation = rows[0]
     active = publisher.session_for(state, maintainer_name, implementation["repository"])

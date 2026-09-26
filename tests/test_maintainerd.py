@@ -262,6 +262,19 @@ class CycleTests(Fixture):
         self.wake(dry_run=True)
         self.assertEqual(self.state.one("runs", "stale")["status"], "interrupted")
 
+    def test_stale_recovery_is_scoped_to_one_maintainer(self):
+        with self.state.db:
+            self.state.db.execute(
+                "INSERT INTO maintainers VALUES (?,?,?)",
+                ("noah", "sdk", cycle.MISSION),
+            )
+            self.state.db.execute(
+                "INSERT INTO runs(id,maintainer,reason,status,started_at) VALUES (?,?,?,?,?)",
+                ("noah-active", "noah", "exploration", "running", utcnow()),
+            )
+        self.wake(dry_run=True)
+        self.assertEqual(self.state.one("runs", "noah-active")["status"], "running")
+
     def test_user_uncommitted_changes_untouched(self):
         (self.source / "README.md").write_text("Uncommitted user work\n")
         (self.source / "untracked").write_text("Leave this alone")
@@ -332,6 +345,22 @@ class CycleTests(Fixture):
             with self.assertRaisesRegex(Error, "distinct GitHub App identities"):
                 cli._serve_identity_check(self.state, ["mira", "noah"])
 
+    def test_distinct_maintainer_locks_can_coexist(self):
+        second = State(self.state.home)
+        self.addCleanup(second.close)
+        with self.state.lock("maintainer-mira"):
+            with second.lock("maintainer-noah"):
+                with self.assertRaises(Busy):
+                    with second.lock("maintainer-mira"):
+                        pass
+
+    def test_worker_argv_uses_same_home_and_module_entrypoint(self):
+        argv = cli._worker_argv(self.state, "mira", 60, 15)
+        self.assertEqual(argv[:3], [sys.executable, "-m", "maintainerd"])
+        self.assertIn(str(self.state.home), argv)
+        self.assertIn("_serve-worker", argv)
+        self.assertIn("mira", argv)
+
     def test_fast_serve_cadence_parsing(self):
         self.assertEqual(cli._serve_interval_seconds(None, 5), 300)
         self.assertEqual(cli._serve_interval_seconds(0.5, None), 1800)
@@ -354,12 +383,12 @@ class CycleTests(Fixture):
         self.assertIsNone(self.state.remaining())
         self.assertTrue(self.state.can_run())
 
-    def test_foreground_loop_stops_on_runtime_failure(self):
+    def test_foreground_worker_stops_on_runtime_failure(self):
         with contextlib.redirect_stdout(io.StringIO()), \
                 patch("maintainerd.discussion.sync_once", return_value=0), \
                 patch("maintainerd.cycle.wake", side_effect=Error("stop")) as wake:
             with self.assertRaisesRegex(Error, "stop"):
-                cli.serve(self.state, "mira", 12 * 60 * 60, 300)
+                cli._serve_worker_loop(self.state, "mira", 12 * 60 * 60, 300)
         self.assertEqual(wake.call_count, 1)
 
 

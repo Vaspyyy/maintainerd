@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import tomllib
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
@@ -116,7 +117,7 @@ class State:
         if self.home in (Path("/"), Path.home().resolve()):
             raise Error("Use a dedicated maintainerd data directory, not your home or filesystem root.")
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for subdirectory in ("repos", "runs", "threads", "implementations", "workspaces"):
+        for subdirectory in ("repos", "runs", "threads", "implementations", "workspaces", "locks"):
             (self.home / subdirectory).mkdir(exist_ok=True, mode=0o700)
         config_path = self.home / "config.toml"
         try:
@@ -125,10 +126,11 @@ class State:
         except FileExistsError:
             pass
         self.config = Config.load(config_path)
-        self.db = sqlite3.connect(self.home / "state.sqlite3", timeout=5)
+        self.db = sqlite3.connect(self.home / "state.sqlite3", timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA busy_timeout=30000")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
         if version not in (0, 1, 2, 3, 4, 5):
             self.db.close()
@@ -259,12 +261,25 @@ class State:
         self.db.close()
 
     @contextmanager
-    def lock(self) -> Iterator[int]:
-        with (self.home / "lock").open("a+") as file:
-            try:
-                fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise Busy("Another maintainerd operation is running. Let it finish or stop it first.") from exc
+    def lock(self, scope: str = "global", *, wait_seconds: float = 0) -> Iterator[int]:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", scope):
+            raise Error("Internal lock scope is invalid.")
+        if not isinstance(wait_seconds, (int, float)) or not 0 <= wait_seconds <= 300:
+            raise Error("Internal lock wait must be between 0 and 300 seconds.")
+        path = self.home / "lock" if scope == "global" else self.home / "locks" / f"{scope}.lock"
+        deadline = time.monotonic() + float(wait_seconds)
+        with path.open("a+") as file:
+            while True:
+                try:
+                    fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if time.monotonic() >= deadline:
+                        raise Busy(
+                            f"Another maintainerd operation owns the {scope} lock. "
+                            "Let it finish or stop that worker first."
+                        ) from exc
+                    time.sleep(0.05)
             try:
                 yield file.fileno()
             finally:
