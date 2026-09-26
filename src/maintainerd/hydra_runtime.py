@@ -52,6 +52,8 @@ def worker_loop(state: HydraState, repository: str, actor: str, role: str, *,
                     delay = settings.scout_interval_seconds
                 else:
                     from . import discussion
+                    from .hydra_recovery import recover_unposted_reviews
+                    recover_unposted_reviews(state, actor)
                     # Existing author revisions, implementation, discussion and peer review win.
                     activity = discussion.sync_once(state, actor, max_threads=1)
                     if not activity:
@@ -73,6 +75,8 @@ def worker_loop(state: HydraState, repository: str, actor: str, role: str, *,
                 kind = error_kind(exc)
                 if kind == 'quota':
                     provider_pause(state.db, 'quota', 'Codex usage exhausted. No credential/model fallback.')
+                    worker_state(state.db, actor, role, 'paused_provider', pid=os.getpid(),
+                                 detail='Codex quota exhausted; no new launches until operator resume.')
                     print('quota: shared provider circuit paused; other in-flight turns may finish.', flush=True)
                     if once:
                         return 75

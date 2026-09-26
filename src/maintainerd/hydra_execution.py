@@ -150,6 +150,16 @@ def admission(config, artifacts: Path, stage: str | None = None):
                     db.execute('UPDATE hydra_launches SET finished_at=?,status=?,usage=? WHERE id=?',
                                (utcnow(), status, json.dumps(usage), identity))
     finally:
-        if slot is not None:
-            slot.close()
-        db.close()
+        try:
+            if not launched:
+                # Legacy callers set invoked=1 before entering the adapter. A denied
+                # admission is not a model launch, including in imported history.
+                table, _, row_id = identity.partition(':')
+                if table in ('runs', 'thread_turns', 'implementation_steps', 'review_turns'):
+                    if not db.execute('SELECT id FROM hydra_launches WHERE id=?', (identity,)).fetchone():
+                        with db:
+                            db.execute(f'UPDATE {table} SET invoked=0 WHERE id=?', (row_id,))
+        finally:
+            if slot is not None:
+                slot.close()
+            db.close()

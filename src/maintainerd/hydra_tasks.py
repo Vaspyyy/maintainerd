@@ -145,7 +145,7 @@ def _make_report(state: HydraState, maintainer: str, candidate: dict, run_id: st
     with state.db:
         state.db.execute('INSERT INTO runs(id,maintainer,reason,status,started_at,finished_at,'
                          'commit_sha,result,invoked) VALUES (?,?,?,?,?,?,?,?,0) '
-                         'ON CONFLICT(id) DO UPDATE SET commit_sha=excluded.commit_sha,result=excluded.result,'
+                         'ON CONFLICT(id) DO UPDATE SET maintainer=excluded.maintainer,commit_sha=excluded.commit_sha,result=excluded.result,'
                          'finished_at=excluded.finished_at',
                          (report_id, maintainer, 'hydra-validation', 'completed', utcnow(), utcnow(), sha,
                           json.dumps(result)))
