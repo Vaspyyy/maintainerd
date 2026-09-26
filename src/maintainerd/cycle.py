@@ -82,7 +82,7 @@ def wake(state: State, maintainer_name: str, reason: str = "exploration", *, dry
         if not dry_run:
             if (state.home / "PAUSED").exists():
                 raise Error("Maintenance is paused. Use 'maintainerd resume' to permit new runs.")
-            if not state.remaining():
+            if not state.can_run():
                 raise Error("Daily run budget reached. It resets at 00:00 UTC. No Codex call was made.")
             version = codex.preflight(state.config)
         else:

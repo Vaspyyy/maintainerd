@@ -129,17 +129,25 @@ Then verify the exact installation and permission before publishing:
 .venv/bin/maintainerd doctor
 ```
 
-The global App settings above are a convenient fallback for the first maintainer. **Each additional maintainer should get its own GitHub App** so GitHub shows distinct identities and bots can respond to one another instead of treating another maintainer as themselves:
+The global App settings above are a convenient fallback for the first maintainer. **Each additional maintainer should get its own GitHub App** so GitHub shows distinct identities and bots can respond to one another instead of treating another maintainer as themselves. A three-maintainer setup can use **Mira, Noah, and Iris**:
 
 ```sh
 .venv/bin/maintainerd maintainer create noah
+.venv/bin/maintainerd maintainer create iris
+
 .venv/bin/maintainerd identity set noah \
   --app-id 7654321 \
   --key-path ~/.config/maintainerd/noah.private-key.pem
 
+.venv/bin/maintainerd identity set iris \
+  --app-id 8765432 \
+  --key-path ~/.config/maintainerd/iris.private-key.pem
+
 .venv/bin/maintainerd identity list
 .venv/bin/maintainerd doctor
 ```
+
+For implementation-capable maintainers, each App needs the same repository-scoped **Issues, Contents, and Pull requests: Read and write** permissions as Mira. Multi-maintainer `serve` refuses to start if two selected maintainers resolve to the same bot login.
 
 A per-maintainer identity overrides the global fallback only for that maintainer. `identity clear noah` returns Noah to the global fallback. `doctor` warns when multiple maintainers resolve to the same bot login because distinct bot-to-bot conversation would not work correctly in that configuration.
 
@@ -251,7 +259,7 @@ The first command creates:
 ```toml
 codex_binary = "codex"
 timeout_seconds = 900
-max_runs_per_day = 4
+max_runs_per_day = 4 # set to 0 for no maintainerd daily launch cap
 include_github = true
 publish_proposals = false
 # github_app_id = 123456
@@ -261,19 +269,31 @@ publish_proposals = false
 
 The model is deliberately not hardcoded. With `model` omitted, Codex chooses its default; it does **not** inherit a model selection from your ignored personal `config.toml`. Use this application configuration to make the choice explicit. Unknown configuration keys are rejected, including API-key settings.
 
-The daily budget counts actual Codex launch attempts, including failed exploration and discussion turns, across all contributors in this data directory. It resets at midnight UTC. Doctor checks, inbox polls with nothing to answer, and dry runs do not consume it. The 15-minute timeout covers each Codex invocation; Git and GitHub preparation have their own shorter timeouts.
+The daily budget counts actual Codex launch attempts, including failed exploration, discussion, and implementation turns, across all contributors in this data directory. It resets at midnight UTC. Set `max_runs_per_day = 0` to disable this **local maintainerd cap entirely**; your real Codex/ChatGPT subscription allowance remains the external limit. Doctor checks, inbox polls with nothing to answer, and dry runs do not consume it. The 15-minute timeout covers each Codex invocation; Git and GitHub preparation have their own shorter timeouts.
 
 ## Continuous foreground operation
 
-After manual checks, one simple loop can handle both proactive exploration and reactive discussion:
+One foreground scheduler can run one or many maintainers. The old hourly form still works:
 
 ```sh
 .venv/bin/maintainerd serve mira --every-hours 12 --poll-seconds 300
 ```
 
-Every five minutes it checks Mira's GitHub threads. Polls with nothing to answer cost no Codex usage. If an approved implementation is active, each poll may perform one additional implementation step and push one visible commit; proactive exploration is paused until that implementation is complete or blocked. Otherwise Mira receives a proactive exploration wake every twelve hours even when nothing happened on GitHub.
+For an aggressive three-maintainer loop:
 
-This runs in the foreground. If no previous exploration exists, the first inspection is immediate. Otherwise the next exploration is based on the last recorded attempt, so restarting does not immediately spend another run. Runtime errors stop the loop instead of retry-burning allowance. Ctrl+C stops the loop and terminates an active Codex process group. Nothing installs itself into systemd yet.
+```sh
+.venv/bin/maintainerd serve mira noah iris \
+  --every-minutes 5 \
+  --poll-seconds 30
+```
+
+`--every-minutes` accepts 1 to 10080 minutes. Discussion polling accepts 15 to 3600 seconds. The scheduler is deliberately **serialized but round-robin**: only one Codex process owns the controller at a time, while Mira, Noah, and Iris rotate fairly through reactive work and proactive exploration. This preserves the single-host Git/SQLite safety model without requiring three fighting daemon processes.
+
+Each maintainer has its own exploration clock. New maintainers are immediately due for a first inspection; afterward each is eligible again after the configured interval. Polls with nothing to answer cost no Codex usage. Active implementation work is continued through inbox polling, while that maintainer's proactive exploration is suppressed until the implementation is complete or blocked. Other maintainers keep exploring.
+
+With a one-minute exploration interval and three maintainers, the scheduler will generally keep Codex busy continuously because model turns themselves take longer than the cadence. Use `max_runs_per_day = 0` if you intentionally want the local launch cap out of the way.
+
+This runs in the foreground. Restarting preserves each maintainer's last-run timing instead of blindly spending another run. Runtime errors stop the group rather than silently retry-burning allowance. Ctrl+C stops the loop and terminates an active Codex process group. Nothing installs itself into systemd yet.
 
 ```sh
 .venv/bin/maintainerd pause
@@ -321,6 +341,6 @@ The open draft PR is the implementation lease. No manager agent allocates work a
 1. Exercise the live approval -> claim -> draft PR -> incremental commit loop on a real issue and tune the implementation prompt.
 2. Add PR review/revision loops and CI-aware follow-up while keeping human merging as the default.
 3. Add stale-claim recovery for claim-only branches whose controller died before creating a PR.
-4. Then add a second independent maintainer identity and optionally another machine.
+4. Then consider a second machine once the three-maintainer single-host scheduler has enough real-world mileage.
 
 The contributor's purpose remains the same across milestones: notice useful work, investigate it, discuss when appropriate, and continue over time. The surrounding software should stay small enough to understand.

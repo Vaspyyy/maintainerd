@@ -474,7 +474,7 @@ def run_step(
     implementation: dict,
     lock_fd: int,
 ) -> str:
-    if not state.remaining():
+    if not state.can_run():
         raise Error("Daily Codex run budget reached before implementation step.")
     pr = publisher.pull_request(active, implementation["pr_number"])
     if pr.get("state") != "open":

@@ -76,9 +76,14 @@ def parser() -> argparse.ArgumentParser:
     forget.add_argument("id", type=int)
     commands.add_parser("pause", help="Prevent new real runs; does not interrupt an active run")
     commands.add_parser("resume", help="Permit new real runs")
-    serve = commands.add_parser("serve", help="Foreground maintenance loop: discussion polling plus exploration")
-    serve.add_argument("name")
-    serve.add_argument("--every-hours", type=float, default=12)
+    serve = commands.add_parser(
+        "serve",
+        help="Foreground loop for one or more maintainers: discussion polling plus exploration",
+    )
+    serve.add_argument("names", nargs="+", metavar="name")
+    cadence = serve.add_mutually_exclusive_group()
+    cadence.add_argument("--every-hours", type=float)
+    cadence.add_argument("--every-minutes", type=float)
     serve.add_argument("--poll-seconds", type=int, default=300)
     return root
 
@@ -155,62 +160,148 @@ def doctor(state: State) -> int:
                 f"WARN {', '.join(owners)} share {bot_login}; give them distinct Apps "
                 "before expecting bot-to-bot conversation."
             )
-    print(f"Remaining run starts today (UTC): {state.remaining()}/{state.config.max_runs_per_day}")
+    remaining = state.remaining()
+    if remaining is None:
+        print("Remaining run starts today (UTC): unlimited local cap")
+    else:
+        print(f"Remaining run starts today (UTC): {remaining}/{state.config.max_runs_per_day}")
     print("Doctor does not call a model or prove sandbox enforcement. The first wake is the live integration check.")
     print("Use trusted repositories only; the Codex sandbox is not a separate VM or protection from reading your home.")
     return int(failed)
 
 
-def serve(state: State, maintainer: str, hours: float, poll_seconds: int) -> None:
-    if not 1 <= hours <= 168:
-        raise Error("--every-hours must be between 1 and 168.")
-    if not 30 <= poll_seconds <= 3600:
-        raise Error("--poll-seconds must be between 30 and 3600.")
-    state.one("maintainers", maintainer)
-    next_poll = 0.0
+def _serve_interval_seconds(hours: float | None, minutes: float | None) -> float:
+    if hours is None and minutes is None:
+        return 12 * 60 * 60
+    if minutes is not None:
+        if not 1 <= minutes <= 10080:
+            raise Error("--every-minutes must be between 1 and 10080.")
+        return minutes * 60
+    assert hours is not None
+    if not (1 / 60) <= hours <= 168:
+        raise Error("--every-hours must be between 1/60 and 168.")
+    return hours * 60 * 60
+
+
+def _serve_identity_check(state: State, maintainers: list[str]) -> None:
+    if len(maintainers) < 2:
+        return
+    logins: dict[str, str] = {}
+    for maintainer in maintainers:
+        item = state.one("maintainers", maintainer)
+        repository = state.one("repositories", item["repository"])
+        target = repository.get("github")
+        if not target:
+            raise Error(f"{maintainer} has no GitHub owner/repo configured.")
+        if not publisher.configured_for(state, maintainer):
+            raise Error(
+                f"{maintainer} needs its own GitHub App identity before multi-maintainer serve."
+            )
+        active = publisher.session_for(state, maintainer, target)
+        previous = logins.get(active.bot_login)
+        if previous:
+            raise Error(
+                f"{previous} and {maintainer} both resolve to {active.bot_login}. "
+                "Multi-maintainer serve requires distinct GitHub App identities."
+            )
+        logins[active.bot_login] = maintainer
+
+
+def _exploration_delay(state: State, maintainer: str, interval_seconds: float) -> float:
+    rows = state.rows(
+        "SELECT started_at FROM runs WHERE maintainer=? AND invoked=1 "
+        "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+        (maintainer,),
+    )
+    if not rows:
+        return 0.0
+    due = datetime.fromisoformat(rows[0]["started_at"]) + timedelta(seconds=interval_seconds)
+    return (due - datetime.now(timezone.utc)).total_seconds()
+
+
+def serve(
+    state: State,
+    maintainers: list[str] | str,
+    interval_seconds: float,
+    poll_seconds: int,
+) -> None:
+    if isinstance(maintainers, str):
+        maintainers = [maintainers]
+    maintainers = list(dict.fromkeys(maintainers))
+    if not maintainers:
+        raise Error("serve needs at least one maintainer.")
+    if not 60 <= interval_seconds <= 168 * 60 * 60:
+        raise Error("Exploration interval must be between 1 minute and 168 hours.")
+    if not 15 <= poll_seconds <= 3600:
+        raise Error("--poll-seconds must be between 15 and 3600.")
+    for maintainer in maintainers:
+        state.one("maintainers", maintainer)
+    _serve_identity_check(state, maintainers)
+
+    next_poll = {maintainer: 0.0 for maintainer in maintainers}
+    cursor = 0
+    cadence = (
+        f"{interval_seconds / 60:g}m"
+        if interval_seconds < 3600
+        else f"{interval_seconds / 3600:g}h"
+    )
+    budget = "unlimited" if state.remaining() is None else f"{state.remaining()} starts left today"
     print(
-        f"Foreground loop for {maintainer}: explore every {hours:g}h, "
-        f"check discussions every {poll_seconds}s. Ctrl+C stops it.",
+        f"Foreground loop for {', '.join(maintainers)}: explore each every {cadence}, "
+        f"check discussions every {poll_seconds}s; local budget {budget}. Ctrl+C stops it.",
         flush=True,
     )
+
     while True:
         if (state.home / "PAUSED").exists():
-            time.sleep(30)
+            time.sleep(15)
             continue
 
-        monotonic = time.monotonic()
-        if monotonic >= next_poll:
+        ordered = maintainers[cursor:] + maintainers[:cursor]
+        did_work = False
+
+        # Reactive work gets first priority. Each maintainer gets one inbox pass
+        # before proactive exploration is considered.
+        for maintainer in ordered:
+            monotonic = time.monotonic()
+            if monotonic < next_poll[maintainer]:
+                continue
             discussion.sync_once(state, maintainer)
-            next_poll = time.monotonic() + poll_seconds
+            next_poll[maintainer] = time.monotonic() + poll_seconds
+            cursor = (maintainers.index(maintainer) + 1) % len(maintainers)
+            did_work = True
 
-        active_implementation = state.rows(
-            "SELECT id FROM implementations WHERE maintainer=? "
-            "AND status IN ('draft','working') LIMIT 1",
-            (maintainer,),
-        )
-        if active_implementation:
-            time.sleep(min(30.0, max(1.0, next_poll - time.monotonic())))
+        # Run at most one proactive exploration before restarting the fairness
+        # loop. A due maintainer with active implementation work is skipped.
+        if state.can_run():
+            ordered = maintainers[cursor:] + maintainers[:cursor]
+            for maintainer in ordered:
+                active_implementation = state.rows(
+                    "SELECT id FROM implementations WHERE maintainer=? "
+                    "AND status IN ('draft','working') LIMIT 1",
+                    (maintainer,),
+                )
+                if active_implementation:
+                    continue
+                if _exploration_delay(state, maintainer, interval_seconds) <= 0:
+                    cycle.wake(state, maintainer, "scheduled")
+                    cursor = (maintainers.index(maintainer) + 1) % len(maintainers)
+                    did_work = True
+                    break
+
+        if did_work:
             continue
 
-        rows = state.rows(
-            "SELECT started_at FROM runs WHERE maintainer=? AND invoked=1 "
-            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
-            (maintainer,),
-        )
-        now = datetime.now(timezone.utc)
-        due = datetime.fromisoformat(rows[0]["started_at"]) + timedelta(hours=hours) if rows else now
-        if not state.remaining():
-            due = max(
-                due,
-                (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0),
+        waits = [
+            max(0.25, next_poll[maintainer] - time.monotonic())
+            for maintainer in maintainers
+        ]
+        if state.can_run():
+            waits.extend(
+                max(0.25, _exploration_delay(state, maintainer, interval_seconds))
+                for maintainer in maintainers
             )
-        delay = (due - now).total_seconds()
-        if delay <= 0 and state.remaining():
-            cycle.wake(state, maintainer, "scheduled")
-            continue
-
-        until_poll = max(1.0, next_poll - time.monotonic())
-        time.sleep(min(30.0, until_poll, max(1.0, delay)))
+        time.sleep(min(15.0, *waits))
 
 
 def dispatch(args: argparse.Namespace, state: State) -> int:
@@ -365,7 +456,8 @@ def dispatch(args: argparse.Namespace, state: State) -> int:
             (state.home / "PAUSED").unlink(missing_ok=True)
             print("New runs permitted. No process or schedule was started.")
         case "serve":
-            serve(state, args.name, args.every_hours, args.poll_seconds)
+            interval = _serve_interval_seconds(args.every_hours, args.every_minutes)
+            serve(state, args.names, interval, args.poll_seconds)
     return 0
 
 

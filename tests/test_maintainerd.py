@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from maintainerd import cli, codex, cycle, github, repo, report
+from maintainerd import cli, codex, cycle, github, publisher, repo, report
 from maintainerd.state import Busy, Config, Error, State, name, utcnow, write_json
 
 
@@ -312,12 +312,54 @@ class CycleTests(Fixture):
             self.assertEqual(cli.doctor(self.state), 0)
         self.assertEqual(self.executions(), [])
 
+    def test_multi_serve_requires_distinct_bot_identities(self):
+        with self.state.db:
+            self.state.db.execute(
+                "INSERT INTO maintainers VALUES (?,?,?)",
+                ("noah", "sdk", cycle.MISSION),
+            )
+            self.state.db.execute(
+                "UPDATE repositories SET github='owner/repo' WHERE name='sdk'"
+            )
+        shared = publisher.Session(
+            "owner/repo",
+            "token",
+            "same-maintainer[bot]",
+            {"issues":"write","contents":"write","pull_requests":"write"},
+        )
+        with patch("maintainerd.cli.publisher.configured_for", return_value=True), \
+                patch("maintainerd.cli.publisher.session_for", return_value=shared):
+            with self.assertRaisesRegex(Error, "distinct GitHub App identities"):
+                cli._serve_identity_check(self.state, ["mira", "noah"])
+
+    def test_fast_serve_cadence_parsing(self):
+        self.assertEqual(cli._serve_interval_seconds(None, 5), 300)
+        self.assertEqual(cli._serve_interval_seconds(0.5, None), 1800)
+        self.assertEqual(cli._serve_interval_seconds(None, None), 12 * 60 * 60)
+        with self.assertRaisesRegex(Error, "between 1 and 10080"):
+            cli._serve_interval_seconds(None, 0.5)
+
+    def test_serve_parser_accepts_multiple_maintainers(self):
+        args = cli.parser().parse_args([
+            "serve", "mira", "noah", "iris",
+            "--every-minutes", "5", "--poll-seconds", "30",
+        ])
+        self.assertEqual(args.names, ["mira", "noah", "iris"])
+        self.assertEqual(args.every_minutes, 5)
+        self.assertIsNone(args.every_hours)
+        self.assertEqual(args.poll_seconds, 30)
+
+    def test_zero_daily_budget_means_unlimited_local_cap(self):
+        self.state.config = replace(self.state.config, max_runs_per_day=0)
+        self.assertIsNone(self.state.remaining())
+        self.assertTrue(self.state.can_run())
+
     def test_foreground_loop_stops_on_runtime_failure(self):
         with contextlib.redirect_stdout(io.StringIO()), \
                 patch("maintainerd.discussion.sync_once", return_value=0), \
                 patch("maintainerd.cycle.wake", side_effect=Error("stop")) as wake:
             with self.assertRaisesRegex(Error, "stop"):
-                cli.serve(self.state, "mira", 12, 300)
+                cli.serve(self.state, "mira", 12 * 60 * 60, 300)
         self.assertEqual(wake.call_count, 1)
 
 
@@ -415,8 +457,9 @@ class ContractTests(unittest.TestCase):
     def test_config_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
-            for value in ('api_key="secret"', 'max_runs_per_day=true', 'timeout_seconds=0',
-                          'model=[]', 'include_github="yes"', 'codex_binary=""', 'bad syntax'):
+            for value in ('api_key="secret"', 'max_runs_per_day=true', 'max_runs_per_day=-1',
+                          'max_runs_per_day=10001', 'timeout_seconds=0', 'model=[]',
+                          'include_github="yes"', 'codex_binary=""', 'bad syntax'):
                 with self.subTest(value=value):
                     path.write_text(value)
                     with self.assertRaises(Error):

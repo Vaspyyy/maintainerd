@@ -197,7 +197,7 @@ def respond(
     trigger_events: list[dict],
     lock_fd: int,
 ) -> str:
-    if not state.remaining():
+    if not state.can_run():
         raise Error("Daily run budget reached before discussion response; pending comments were left untouched.")
     codex_version = codex.preflight(state.config)
     turn_id = uuid.uuid4().hex[:16]
@@ -374,7 +374,7 @@ def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> in
             )
             if approved is not None:
                 processed_threads += 1
-                if state.remaining():
+                if state.can_run():
                     implementation.run_step(
                         state, maintainer, repository, active, approved, lock_fd
                     )
@@ -391,7 +391,7 @@ def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> in
             if not pending:
                 continue
 
-            if not state.remaining():
+            if not state.can_run():
                 print("Daily Codex run budget exhausted; discussion comments remain pending.", flush=True)
                 break
             respond(
@@ -400,7 +400,7 @@ def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> in
             )
             processed_threads += 1
 
-        if not implementation_stepped and state.remaining():
+        if not implementation_stepped and state.can_run():
             implementation_stepped = implementation.continue_one(
                 state, maintainer_name, lock_fd
             )

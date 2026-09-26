@@ -42,7 +42,7 @@ def write_json(path: Path, value: object) -> None:
 DEFAULT_CONFIG = '''# No API keys. Codex must be logged in with ChatGPT.
 codex_binary = "codex"
 timeout_seconds = 900
-max_runs_per_day = 4
+max_runs_per_day = 4 # 0 disables maintainerd's local daily launch cap
 include_github = true
 publish_proposals = false
 # GitHub App identity used only by the trusted host-side proposal publisher.
@@ -74,10 +74,15 @@ class Config:
         if unknown:
             raise Error(f"Unknown configuration keys: {', '.join(sorted(unknown))}")
         config = cls(**data)
-        for key, maximum in (("timeout_seconds", 7200), ("max_runs_per_day", 100)):
-            value = getattr(config, key)
-            if type(value) is not int or not 1 <= value <= maximum:
-                raise Error(f"{key} must be an integer between 1 and {maximum}.")
+        value = config.timeout_seconds
+        if type(value) is not int or not 1 <= value <= 7200:
+            raise Error("timeout_seconds must be an integer between 1 and 7200.")
+        value = config.max_runs_per_day
+        if type(value) is not int or not 0 <= value <= 10000:
+            raise Error(
+                "max_runs_per_day must be an integer between 0 and 10000; "
+                "0 disables the local daily launch cap."
+            )
         if type(config.include_github) is not bool:
             raise Error("include_github must be true or false.")
         if type(config.publish_proposals) is not bool:
@@ -296,7 +301,9 @@ class State:
             )
         return result
 
-    def remaining(self) -> int:
+    def remaining(self) -> int | None:
+        if self.config.max_runs_per_day == 0:
+            return None
         used_runs = self.db.execute(
             "SELECT count(*) FROM runs WHERE invoked=1 AND substr(started_at,1,10)=?",
             (utcnow()[:10],),
@@ -310,6 +317,10 @@ class State:
             (utcnow()[:10],),
         ).fetchone()[0]
         return max(0, self.config.max_runs_per_day - used_runs - used_threads - used_steps)
+
+    def can_run(self) -> bool:
+        remaining = self.remaining()
+        return remaining is None or remaining > 0
 
 
 def default_home() -> Path:
