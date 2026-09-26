@@ -6,7 +6,7 @@ import json
 import uuid
 from pathlib import Path
 
-from . import codex, implementation, publisher, repo, report
+from . import codex, implementation, publisher, repo, report, review
 from .state import Error, State, utcnow, write_json
 
 
@@ -176,6 +176,34 @@ def _record_comments(
     return inserted
 
 
+def _record_issue_open(
+    state: State,
+    maintainer: str,
+    repository: str,
+    issue_number: int,
+    issue: dict,
+    owner_maintainer: str,
+    self_login: str,
+) -> int:
+    if owner_maintainer == maintainer:
+        return 0
+    author, author_type = _author(issue)
+    status = "ignored" if author == self_login else "pending"
+    synthetic_id = -issue_number
+    with state.db:
+        cursor = state.db.execute(
+            "INSERT OR IGNORE INTO thread_events("
+            "maintainer,repository,issue_number,comment_id,author,author_type,body,created_at,status"
+            ") VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                maintainer, repository, issue_number, synthetic_id,
+                author, author_type, (issue.get("body") or "")[:20000],
+                issue.get("created_at") or utcnow(), status,
+            ),
+        )
+    return int(bool(cursor.rowcount and status == "pending"))
+
+
 def _pending(state: State, maintainer: str, repository: str, issue_number: int) -> list[dict]:
     return state.rows(
         "SELECT * FROM thread_events WHERE maintainer=? AND repository=? AND issue_number=? "
@@ -342,14 +370,27 @@ def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> in
             raise Error("The maintainer's repository has no GitHub owner/repo configured.")
         active = publisher.session_for(state, maintainer_name, target)
         routes = state.rows(
-            "SELECT DISTINCT p.repository,p.issue_number FROM proposal_routes p "
-            "JOIN runs r ON r.id=p.run_id WHERE r.maintainer=? AND p.repository=? "
-            "ORDER BY p.issue_number",
-            (maintainer_name, target),
+            "SELECT p.repository,p.issue_number,MIN(p.published_at) AS first_published,"
+            "(SELECT r2.maintainer FROM proposal_routes p2 "
+            " JOIN runs r2 ON r2.id=p2.run_id "
+            " WHERE p2.repository=p.repository AND p2.issue_number=p.issue_number "
+            " ORDER BY CASE p2.mode WHEN 'created' THEN 0 ELSE 1 END,p2.published_at LIMIT 1"
+            ") AS owner_maintainer "
+            "FROM proposal_routes p WHERE p.repository=? "
+            "GROUP BY p.repository,p.issue_number ORDER BY first_published,p.issue_number",
+            (target,),
         )
         discovered = 0
+        open_routes = []
         for route in routes:
             thread = publisher.issue_thread(active, route["issue_number"])
+            if thread["issue"].get("state") != "open":
+                continue
+            open_routes.append(route)
+            discovered += _record_issue_open(
+                state, maintainer_name, target, route["issue_number"],
+                thread["issue"], route["owner_maintainer"], active.bot_login,
+            )
             discovered += _record_comments(
                 state, maintainer_name, target, route["issue_number"],
                 thread["comments"], active.bot_login,
@@ -357,21 +398,30 @@ def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> in
 
         processed_threads = 0
         implementation_stepped = False
-        for route in routes:
+
+        # Existing implementation/revision work has priority over fresh discussion.
+        if state.can_run():
+            implementation_stepped = implementation.continue_one(
+                state, maintainer_name, lock_fd
+            )
+
+        for route in open_routes:
             if processed_threads >= max_threads:
                 break
 
-            history = implementation.approval_history(
-                state, maintainer_name, target, route["issue_number"]
-            )
-            approved = implementation.authorize(
-                state,
-                maintainer,
-                repository,
-                active,
-                route["issue_number"],
-                history,
-            )
+            approved = None
+            if route["owner_maintainer"] == maintainer_name:
+                history = implementation.approval_history(
+                    state, maintainer_name, target, route["issue_number"]
+                )
+                approved = implementation.authorize(
+                    state,
+                    maintainer,
+                    repository,
+                    active,
+                    route["issue_number"],
+                    history,
+                )
             if approved is not None:
                 processed_threads += 1
                 if state.can_run():
@@ -400,11 +450,16 @@ def sync_once(state: State, maintainer_name: str, *, max_threads: int = 2) -> in
             )
             processed_threads += 1
 
+        peer_reviewed = False
         if not implementation_stepped and state.can_run():
-            implementation_stepped = implementation.continue_one(
-                state, maintainer_name, lock_fd
+            peer_reviewed = review.sync_peer_once(
+                state, maintainer_name, repository, active, lock_fd
             )
 
         if not processed_threads and discovered:
-            print(f"Recorded {discovered} new comment(s); none required a discussion turn.", flush=True)
-        return processed_threads + int(implementation_stepped)
+            print(
+                f"Recorded {discovered} new shared-thread event(s); "
+                "none required a discussion reply.",
+                flush=True,
+            )
+        return processed_threads + int(implementation_stepped) + int(peer_reviewed)

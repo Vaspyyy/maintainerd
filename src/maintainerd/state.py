@@ -117,7 +117,7 @@ class State:
         if self.home in (Path("/"), Path.home().resolve()):
             raise Error("Use a dedicated maintainerd data directory, not your home or filesystem root.")
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for subdirectory in ("repos", "runs", "threads", "implementations", "workspaces", "locks"):
+        for subdirectory in ("repos", "runs", "threads", "implementations", "reviews", "workspaces", "locks"):
             (self.home / subdirectory).mkdir(exist_ok=True, mode=0o700)
         config_path = self.home / "config.toml"
         try:
@@ -132,7 +132,7 @@ class State:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA busy_timeout=30000")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3, 4, 5):
+        if version not in (0, 1, 2, 3, 4, 5, 6):
             self.db.close()
             raise Error(f"State schema {version} is newer than this maintainerd supports.")
         self.db.executescript('''
@@ -249,12 +249,43 @@ class State:
                 usage TEXT,
                 invoked INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS review_turns (
+                id TEXT PRIMARY KEY,
+                reviewer TEXT NOT NULL REFERENCES maintainers(name),
+                repository TEXT NOT NULL,
+                pr_number INTEGER NOT NULL,
+                head_sha TEXT NOT NULL,
+                author_maintainer TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                result TEXT,
+                error TEXT,
+                usage TEXT,
+                invoked INTEGER NOT NULL DEFAULT 0,
+                review_id INTEGER,
+                review_url TEXT,
+                UNIQUE(reviewer, repository, pr_number, head_sha)
+            );
+            CREATE TABLE IF NOT EXISTS revision_requests (
+                id INTEGER PRIMARY KEY,
+                implementation_id INTEGER NOT NULL REFERENCES implementations(id),
+                review_id INTEGER NOT NULL,
+                author TEXT NOT NULL,
+                head_sha TEXT NOT NULL,
+                body TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','addressed')),
+                created_at TEXT NOT NULL,
+                addressed_at TEXT,
+                UNIQUE(implementation_id, review_id)
+            );
             INSERT OR IGNORE INTO proposal_routes(
                 run_id,finding_index,repository,issue_number,issue_url,title,mode,comment_id,published_at
             )
             SELECT run_id,finding_index,repository,issue_number,issue_url,title,'created',NULL,published_at
             FROM proposal_publications;
-            PRAGMA user_version=5;
+            PRAGMA user_version=6;
         ''')
 
     def close(self) -> None:
@@ -331,11 +362,48 @@ class State:
             "SELECT count(*) FROM implementation_steps WHERE invoked=1 AND substr(started_at,1,10)=?",
             (utcnow()[:10],),
         ).fetchone()[0]
-        return max(0, self.config.max_runs_per_day - used_runs - used_threads - used_steps)
+        used_reviews = self.db.execute(
+            "SELECT count(*) FROM review_turns WHERE invoked=1 AND substr(started_at,1,10)=?",
+            (utcnow()[:10],),
+        ).fetchone()[0]
+        return max(
+            0,
+            self.config.max_runs_per_day - used_runs - used_threads - used_steps - used_reviews,
+        )
 
     def can_run(self) -> bool:
         remaining = self.remaining()
         return remaining is None or remaining > 0
+
+    def fleet_coverage(self, repository: str, limit: int = 30) -> dict:
+        rows = self.rows(
+            "SELECT r.maintainer,r.started_at,r.result FROM runs r "
+            "JOIN maintainers m ON m.name=r.maintainer "
+            "WHERE m.repository=? AND r.status='completed' AND r.result IS NOT NULL "
+            "ORDER BY r.started_at DESC,r.rowid DESC LIMIT ?",
+            (repository, limit),
+        )
+        counts: dict[str, int] = {}
+        by_maintainer: dict[str, int] = {}
+        for row in rows:
+            by_maintainer[row["maintainer"]] = by_maintainer.get(row["maintainer"], 0) + 1
+            try:
+                result = json.loads(row["result"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            for path in result.get("inspected_paths") or []:
+                if isinstance(path, str) and path.strip():
+                    normalized = path.strip()
+                    counts[normalized] = counts.get(normalized, 0) + 1
+        heavy = [
+            {"path": path, "recent_inspections": count}
+            for path, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:20]
+        ]
+        return {
+            "window_runs": len(rows),
+            "runs_by_maintainer": by_maintainer,
+            "heavily_inspected_paths": heavy,
+        }
 
 
 def default_home() -> Path:

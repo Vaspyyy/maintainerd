@@ -26,6 +26,8 @@ API = "https://api.github.com"
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 WORD = re.compile(r"[A-Za-z][A-Za-z0-9_./:-]{2,}")
 PATH = re.compile(r"(?:src|tests|docs|examples)/[A-Za-z0-9_./-]+")
+CALL_SYMBOL = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]{2,})\s*\(")
+BACKTICK_SYMBOL = re.compile(r"`([A-Za-z_][A-Za-z0-9_]{2,})(?:\([^\`]*\))?`")
 _SESSION_CACHE: dict[tuple[object, ...], tuple[float, "Session"]] = {}
 
 OVERLAP_THRESHOLD = 0.76
@@ -379,6 +381,86 @@ def mark_ready_for_review(active: Session, number: int) -> dict:
     return ready
 
 
+def convert_to_draft(active: Session, number: int) -> dict:
+    pr = pull_request(active, number)
+    if pr.get("state") != "open":
+        raise Error("Only an open pull request can be converted to draft.")
+    if pr.get("draft", False):
+        return pr
+    node_id = pr.get("node_id")
+    if not isinstance(node_id, str) or not node_id:
+        raise Error("GitHub pull request did not expose a GraphQL node ID.")
+    value = _api(
+        "POST",
+        "/graphql",
+        active.token,
+        {
+            "query": (
+                "mutation($id: ID!) { "
+                "convertPullRequestToDraft(input: {pullRequestId: $id}) { "
+                "pullRequest { number isDraft url } "
+                "} }"
+            ),
+            "variables": {"id": node_id},
+        },
+    )
+    if not isinstance(value, dict) or value.get("errors"):
+        raise Error("GitHub refused to convert the pull request to draft.")
+    draft = (((value.get("data") or {}).get("convertPullRequestToDraft") or {}).get("pullRequest") or {})
+    if draft.get("isDraft") is not True:
+        raise Error("GitHub did not confirm that the pull request is draft.")
+    return draft
+
+
+def pull_reviews(active: Session, number: int) -> list[dict]:
+    value = _api(
+        "GET",
+        f"/repos/{active.repository}/pulls/{number}/reviews?per_page=100",
+        active.token,
+    )
+    if not isinstance(value, list):
+        raise Error("GitHub returned an invalid pull-request review list.")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def pull_review_comments(active: Session, number: int) -> list[dict]:
+    value = _api(
+        "GET",
+        f"/repos/{active.repository}/pulls/{number}/comments?per_page=100",
+        active.token,
+    )
+    if not isinstance(value, list):
+        raise Error("GitHub returned an invalid pull-request review-comment list.")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def pull_files(active: Session, number: int) -> list[dict]:
+    value = _api(
+        "GET",
+        f"/repos/{active.repository}/pulls/{number}/files?per_page=100",
+        active.token,
+    )
+    if not isinstance(value, list):
+        raise Error("GitHub returned an invalid pull-request file list.")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def submit_review(active: Session, number: int, event: str, body: str) -> dict:
+    if event not in ("APPROVE", "REQUEST_CHANGES", "COMMENT"):
+        raise Error("Unsupported pull-request review event.")
+    if not body.strip() and event != "APPROVE":
+        raise Error("A non-approval pull-request review needs a body.")
+    value = _api(
+        "POST",
+        f"/repos/{active.repository}/pulls/{number}/reviews",
+        active.token,
+        {"event": event, "body": body.strip()},
+    )
+    if not isinstance(value, dict) or type(value.get("id")) is not int:
+        raise Error("GitHub review creation returned incomplete metadata.")
+    return value
+
+
 def issue_thread(active: Session, issue_number: int) -> dict:
     if type(issue_number) is not int or issue_number <= 0:
         raise Error("Issue number must be a positive integer.")
@@ -414,6 +496,27 @@ def _clip(value: str, limit: int = 6000) -> str:
     return value[: limit - 30].rstrip() + "\n\n[truncated by maintainerd]"
 
 
+def _coordination_only_evidence(value: str) -> bool:
+    text = value.casefold()
+    mentions_snapshot = "supplied" in text or "snapshot" in text or "open item" in text
+    dedupe_language = (
+        "no matching" in text
+        or "no supplied" in text
+        or "contain no matching" in text
+        or "contains no matching" in text
+        or "no supplied item overlaps" in text
+        or "recent closed" in text
+    )
+    return mentions_snapshot and dedupe_language and "#" in value
+
+
+def _public_evidence(finding: dict) -> list[str]:
+    return [
+        item for item in finding["evidence"]
+        if isinstance(item, str) and item.strip() and not _coordination_only_evidence(item)
+    ]
+
+
 def issue_body(maintainer: str, run_id: str, sha: str, finding: dict) -> str:
     marker = f"<!-- maintainerd run={run_id} finding=0 -->"
     lines = [
@@ -424,7 +527,7 @@ def issue_body(maintainer: str, run_id: str, sha: str, finding: dict) -> str:
         "",
         "## Problem", "", _clip(finding["problem"]), "", "## Evidence", "",
     ]
-    lines.extend(f"- {_clip(item, 1500)}" for item in finding["evidence"][:12])
+    lines.extend(f"- {_clip(item, 1500)}" for item in _public_evidence(finding)[:12])
     lines.extend([
         "", "## Possible direction", "", _clip(finding["proposal"]),
         "", "## Tradeoffs", "", _clip(finding["tradeoffs"]),
@@ -451,7 +554,7 @@ def overlap_comment(maintainer: str, run_id: str, sha: str, finding: dict) -> st
         "### Evidence",
         "",
     ]
-    lines.extend(f"- {_clip(item, 1500)}" for item in finding["evidence"][:12])
+    lines.extend(f"- {_clip(item, 1500)}" for item in _public_evidence(finding)[:12])
     lines.extend(["", "### Suggested direction", "", _clip(finding["proposal"])])
     if finding["tradeoffs"].strip():
         lines.extend(["", "### Tradeoffs", "", _clip(finding["tradeoffs"])])
@@ -473,6 +576,18 @@ def _paths(text: str) -> set[str]:
     return {match.rstrip(".,:;)").casefold() for match in PATH.findall(text)}
 
 
+_GENERIC_SYMBOLS = {
+    "save", "preview", "load", "validate", "update", "create", "delete",
+    "serialize", "render", "write", "read", "get", "set",
+}
+
+
+def _symbols(text: str) -> set[str]:
+    values = {match.casefold() for match in CALL_SYMBOL.findall(text)}
+    values.update(match.casefold() for match in BACKTICK_SYMBOL.findall(text))
+    return {value for value in values if value not in _GENERIC_SYMBOLS}
+
+
 def similarity(finding: dict, item: dict) -> float:
     candidate_title = " ".join(finding["title"].casefold().split())
     existing_title = " ".join(str(item.get("title") or "").casefold().split())
@@ -484,8 +599,27 @@ def similarity(finding: dict, item: dict) -> float:
     left, right = _terms(candidate_text), _terms(existing_text)
     overlap = len(left & right) / max(1, min(len(left), len(right)))
     paths_left, paths_right = _paths(candidate_text), _paths(existing_text)
-    path_score = len(paths_left & paths_right) / max(1, min(len(paths_left), len(paths_right))) if paths_left and paths_right else 0
-    return max(title_ratio, 0.55 * title_ratio + 0.35 * overlap + 0.10 * path_score)
+    path_score = (
+        len(paths_left & paths_right) / max(1, min(len(paths_left), len(paths_right)))
+        if paths_left and paths_right else 0
+    )
+    symbols_left, symbols_right = _symbols(candidate_text), _symbols(existing_text)
+    shared_symbols = symbols_left & symbols_right
+    symbol_score = (
+        len(shared_symbols) / max(1, min(len(symbols_left), len(symbols_right)))
+        if symbols_left and symbols_right else 0
+    )
+    composite = (
+        0.32 * title_ratio
+        + 0.23 * overlap
+        + 0.15 * path_score
+        + 0.30 * symbol_score
+    )
+    # Two reports naming the same concrete code path and multiple same symbols
+    # are almost certainly the same engineering thread even when models title it differently.
+    if path_score >= 0.5 and len(shared_symbols) >= 2:
+        composite = max(composite, 0.82)
+    return max(title_ratio, composite)
 
 
 def _record_route(

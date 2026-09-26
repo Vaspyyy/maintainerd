@@ -345,12 +345,13 @@ class ImplementationTests(unittest.TestCase):
         mark_ready.assert_called_once_with(self.active, 12)
         self.assertIn("ready for review", update_pr.call_args.kwargs["body"])
 
+    @patch("maintainerd.implementation._sync_revision_requests")
     @patch("maintainerd.implementation.publisher.mark_ready_for_review")
     @patch("maintainerd.implementation.publisher.pull_request")
     @patch("maintainerd.implementation.publisher.session_for")
     @patch("maintainerd.implementation._refresh_pr_description")
     def test_complete_draft_is_reconciled_to_ready_without_model_turn(
-        self, refresh, session_for, pull_request, mark_ready
+        self, refresh, session_for, pull_request, mark_ready, sync_revisions
     ):
         impl = self._insert_implementation()
         with self.state.db:
@@ -359,6 +360,7 @@ class ImplementationTests(unittest.TestCase):
             )
         session_for.return_value = self.active
         pull_request.return_value = {"state": "open", "draft": True}
+        sync_revisions.side_effect = lambda state, active, implementation: implementation
 
         with patch("maintainerd.implementation.run_step") as run_step:
             self.assertFalse(implementation.continue_one(self.state, "mira", 1))
@@ -381,6 +383,77 @@ class ImplementationTests(unittest.TestCase):
         self.assertTrue(implementation.continue_one(self.state, "mira", 1))
         run_step.assert_called_once()
         require_permissions.assert_called_once_with(self.active)
+
+    @patch("maintainerd.implementation.publisher.convert_to_draft")
+    @patch("maintainerd.implementation.github.ci_for_head")
+    @patch("maintainerd.implementation.publisher.pull_reviews")
+    @patch("maintainerd.implementation.publisher.pull_review_comments", return_value=[])
+    @patch("maintainerd.implementation.publisher.pull_request")
+    def test_changes_requested_reopens_complete_pr_for_revision(
+        self, pull_request, pull_review_comments, pull_reviews, ci_for_head, convert_to_draft
+    ):
+        impl = self._insert_implementation()
+        with self.state.db:
+            self.state.db.execute(
+                "UPDATE implementations SET status='complete' WHERE id=?", (impl["id"],)
+            )
+        impl = self.state.rows("SELECT * FROM implementations WHERE id=?", (impl["id"],))[0]
+        pull_request.return_value = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "abc123"},
+        }
+        pull_reviews.return_value = [{
+            "id": 77,
+            "state": "CHANGES_REQUESTED",
+            "commit_id": "abc123",
+            "body": "Inserted air wings can disappear. Add a regression and fix source identity.",
+            "user": {"login": "owner"},
+        }]
+        ci_for_head.return_value = {"failed": [], "checks": [], "limitations": []}
+
+        current = implementation._sync_revision_requests(
+            self.state, self.active, impl
+        )
+        self.assertEqual(current["status"], "revision")
+        convert_to_draft.assert_called_once_with(self.active, 12)
+        request = self.state.rows("SELECT * FROM revision_requests")[0]
+        self.assertEqual(request["status"], "pending")
+        self.assertEqual(request["review_id"], 77)
+        self.assertIn("air wings", request["body"])
+
+    @patch("maintainerd.implementation.publisher.convert_to_draft")
+    @patch("maintainerd.implementation.github.ci_for_head")
+    @patch("maintainerd.implementation.publisher.pull_reviews", return_value=[])
+    @patch("maintainerd.implementation.publisher.pull_review_comments", return_value=[])
+    @patch("maintainerd.implementation.publisher.pull_request")
+    def test_failed_ci_reopens_complete_pr_for_revision(
+        self, pull_request, pull_review_comments, pull_reviews, ci_for_head, convert_to_draft
+    ):
+        impl = self._insert_implementation()
+        with self.state.db:
+            self.state.db.execute(
+                "UPDATE implementations SET status='complete' WHERE id=?", (impl["id"],)
+            )
+        impl = self.state.rows("SELECT * FROM implementations WHERE id=?", (impl["id"],))[0]
+        pull_request.return_value = {
+            "state": "open",
+            "draft": False,
+            "head": {"sha": "abcdef1234567890"},
+        }
+        ci_for_head.return_value = {
+            "checks": [{"name": "quality", "conclusion": "failure"}],
+            "failed": [{"name": "quality", "conclusion": "failure"}],
+            "limitations": [],
+        }
+        current = implementation._sync_revision_requests(
+            self.state, self.active, impl
+        )
+        self.assertEqual(current["status"], "revision")
+        convert_to_draft.assert_called_once()
+        request = self.state.rows("SELECT * FROM revision_requests")[0]
+        self.assertEqual(request["author"], "ci")
+        self.assertIn("quality", request["body"])
 
     def test_pr_body_hides_coordination_plumbing_below_engineering_context(self):
         issue = {

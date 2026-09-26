@@ -30,8 +30,8 @@ your single validated proposal as a GitHub issue after you stop.
 
 The controller fetched the configured branch into this detached worktree:
 {workspace}
-Your current GitHub snapshot, recent commits, previous local reports, and
-sourced memories are in this controller-written file:
+Your current GitHub snapshot, recent commits, previous local reports, shared
+fleet-coverage summary, and sourced memories are in this controller-written file:
 {artifacts / 'context.json'}
 Read that context first. Then inspect real source files, tests, documentation,
 AGENTS.md, and contribution instructions as relevant. You are maintaining THIS
@@ -41,9 +41,16 @@ it. In particular, distinguish SDK development from USING an SDK to edit mods.
 Explore purposefully. Start with the project map, recent work and your existing
 observations, then investigate areas that look promising. Follow real user
 workflows. Check whether a capability already exists under another name and
-whether an open issue, PR, recent closed decision, or previous local proposal overlaps it. Prefer depth
-on one meaningful opportunity to a superficial list. Do not claim you read the
-entire codebase. Point to concrete paths and symbols or relevant issue numbers.
+whether an open issue, PR, recent closed decision, or previous local proposal overlaps it.
+Use fleet_coverage from context as soft diversification pressure: areas repeatedly
+inspected by the other maintainers should usually be deprioritized unless current
+evidence gives you a concrete reason to revisit them. This is not a permanent role
+assignment. Prefer depth on one meaningful opportunity to a superficial list.
+Do not claim you read the entire codebase. Point to concrete paths and symbols.
+Only mention an issue/PR number in the public finding when that item is materially
+related. Dedupe bookkeeping such as "I checked #12-#30 and none match" belongs in
+private reasoning/context, not public evidence, because GitHub references notify
+those threads.
 
 Safety and scope:
 - Do not change files, commit, push, install dependencies, or run test suites.
@@ -111,6 +118,7 @@ def wake(state: State, maintainer_name: str, reason: str = "exploration", *, dry
                        "branch": repository["branch"], "recent_commits": history,
                        "github": gh, "memory": state.memories(maintainer_name),
                        "previous_reports": state.recent(maintainer_name),
+                       "fleet_coverage": state.fleet_coverage(repository["name"]),
                        "controller_limitations": [
                            "Model inspection was read-only: no tests executed or repository files changed.",
                            "Only the five latest successful local reports are included.",

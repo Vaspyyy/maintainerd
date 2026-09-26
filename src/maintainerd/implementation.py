@@ -7,7 +7,7 @@ import re
 import uuid
 from pathlib import Path
 
-from . import codex, publisher, repo, report
+from . import codex, github, publisher, repo, report
 from .state import Error, State, utcnow, write_json
 
 
@@ -222,6 +222,7 @@ def _pr_body(
         "draft": "Implementation has started and this PR remains a draft.",
         "working": "Implementation is in progress and this PR remains a draft.",
         "complete": "Implementation pass is complete and this PR is ready for review.",
+        "revision": "Review or CI feedback is being addressed; this PR remains a draft.",
         "blocked": "Implementation is blocked pending input; this PR remains a draft.",
     }.get(status, f"Implementation status: {status}.")
     lines.extend([
@@ -436,7 +437,14 @@ this controller-owned task worktree:
 {workspace}
 
 Read {artifacts / 'context.json'} first. It contains the issue thread, draft PR,
-recent branch history, previous implementation steps, and sourced memory.
+recent branch history, previous implementation steps, pending review/CI revision
+requests, and sourced memory.
+
+If pending_revision_requests is nonempty, this is a revision turn. Address those
+concrete blockers within the already-approved issue scope before doing unrelated
+cleanup. Review feedback does not require a new human implementation approval.
+If a reported blocker is not actually caused by this PR, verify that carefully
+and explain it in the result rather than making speculative code changes.
 
 Make at most ONE coherent engineering commit worth of progress during this turn.
 You may edit project files and run relevant tests inside the workspace. Do NOT
@@ -509,6 +517,11 @@ def run_step(
             "WHERE implementation_id=? AND id<>? ORDER BY started_at DESC LIMIT 10",
             (implementation["id"], step_id),
         )
+        pending_revisions = state.rows(
+            "SELECT review_id,author,head_sha,body,created_at FROM revision_requests "
+            "WHERE implementation_id=? AND status='pending' ORDER BY id",
+            (implementation["id"],),
+        )
         context = {
             "captured_at": utcnow(),
             "issue_thread": thread,
@@ -516,6 +529,7 @@ def run_step(
             "branch_head": base_sha,
             "recent_branch_history": history,
             "previous_steps": previous,
+            "pending_revision_requests": pending_revisions,
             "memory": state.memories(maintainer["name"]),
         }
         write_json(artifacts / "context.json", context)
@@ -632,6 +646,13 @@ def run_step(
             "SELECT * FROM implementations WHERE id=?",
             (implementation["id"],),
         )[0]
+        if current["status"] == "complete":
+            with state.db:
+                state.db.execute(
+                    "UPDATE revision_requests SET status='addressed',addressed_at=? "
+                    "WHERE implementation_id=? AND status='pending'",
+                    (utcnow(), implementation["id"]),
+                )
         _refresh_pr_description(state, active, current)
         if current["status"] == "complete":
             try:
@@ -744,6 +765,108 @@ def approval_history(
     )
 
 
+def _sync_revision_requests(
+    state: State,
+    active: publisher.Session,
+    implementation: dict,
+) -> dict:
+    pr = publisher.pull_request(active, implementation["pr_number"])
+    if pr.get("state") != "open":
+        return implementation
+    head_sha = ((pr.get("head") or {}).get("sha"))
+    if not isinstance(head_sha, str) or not head_sha:
+        return implementation
+
+    inserted = False
+    review_comments = publisher.pull_review_comments(active, implementation["pr_number"])
+    for review in publisher.pull_reviews(active, implementation["pr_number"]):
+        if str(review.get("state") or "").upper() != "CHANGES_REQUESTED":
+            continue
+        author = str((review.get("user") or {}).get("login") or "unknown")
+        if author == active.bot_login:
+            continue
+        review_id = review.get("id")
+        if type(review_id) is not int:
+            continue
+        commit_id = review.get("commit_id")
+        if isinstance(commit_id, str) and commit_id and commit_id != head_sha:
+            continue
+        body = str(review.get("body") or "").strip()
+        inline = []
+        for comment in review_comments:
+            if comment.get("pull_request_review_id") != review_id:
+                continue
+            path = str(comment.get("path") or "unknown path")
+            line = comment.get("line") or comment.get("original_line")
+            location = f"{path}:{line}" if line else path
+            text = str(comment.get("body") or "").strip()
+            if text:
+                inline.append(f"{location}: {text}")
+        if inline:
+            inline_text = "\n".join(f"- {item}" for item in inline[:30])
+            body = (body + "\n\nInline review findings:\n" + inline_text).strip()
+        if not body:
+            body = "Changes requested on the current PR head."
+        with state.db:
+            cursor = state.db.execute(
+                "INSERT OR IGNORE INTO revision_requests("
+                "implementation_id,review_id,author,head_sha,body,status,created_at"
+                ") VALUES (?,?,?,?,?,'pending',?)",
+                (
+                    implementation["id"], review_id, author, head_sha,
+                    body[:20000], utcnow(),
+                ),
+            )
+        inserted = inserted or bool(cursor.rowcount)
+
+    ci = github.ci_for_head(active.repository, head_sha, state.config.include_github)
+    if ci["failed"]:
+        ci_id = -int(head_sha[:15], 16)
+        names = ", ".join(
+            str(item.get("name") or "unnamed check") for item in ci["failed"][:20]
+        )
+        body = (
+            f"CI is failing on PR head {head_sha[:12]}: {names}. "
+            "Inspect whether the PR caused these failures, reproduce relevant checks locally "
+            "when possible, and fix PR-caused failures before returning to review."
+        )
+        with state.db:
+            cursor = state.db.execute(
+                "INSERT OR IGNORE INTO revision_requests("
+                "implementation_id,review_id,author,head_sha,body,status,created_at"
+                ") VALUES (?,?,?,?,?,'pending',?)",
+                (
+                    implementation["id"], ci_id, "ci", head_sha,
+                    body, utcnow(),
+                ),
+            )
+        inserted = inserted or bool(cursor.rowcount)
+
+    pending = state.rows(
+        "SELECT id FROM revision_requests WHERE implementation_id=? AND status='pending' LIMIT 1",
+        (implementation["id"],),
+    )
+    if pending and implementation["status"] == "complete":
+        if not pr.get("draft", False):
+            publisher.convert_to_draft(active, implementation["pr_number"])
+        with state.db:
+            state.db.execute(
+                "UPDATE implementations SET status='revision',updated_at=? WHERE id=?",
+                (utcnow(), implementation["id"]),
+            )
+        if inserted:
+            print(
+                f"PR #{implementation['pr_number']} has new review/CI blockers; "
+                "returned to draft for revision.",
+                flush=True,
+            )
+        return state.rows(
+            "SELECT * FROM implementations WHERE id=?",
+            (implementation["id"],),
+        )[0]
+    return implementation
+
+
 def continue_one(
     state: State,
     maintainer_name: str,
@@ -754,12 +877,14 @@ def continue_one(
 
     completed = state.rows(
         "SELECT * FROM implementations WHERE maintainer=? AND status='complete' "
-        "ORDER BY updated_at DESC,id DESC LIMIT 1",
+        "ORDER BY updated_at DESC,id DESC",
         (maintainer_name,),
     )
-    if completed:
-        implementation = completed[0]
+    for implementation in completed:
         active = publisher.session_for(state, maintainer_name, implementation["repository"])
+        implementation = _sync_revision_requests(state, active, implementation)
+        if implementation["status"] == "revision":
+            break
         pr = publisher.pull_request(active, implementation["pr_number"])
         if pr.get("state") == "open" and pr.get("draft", False):
             _refresh_pr_description(state, active, implementation)
@@ -771,8 +896,9 @@ def continue_one(
             )
 
     rows = state.rows(
-        "SELECT * FROM implementations WHERE maintainer=? AND status IN ('draft','working') "
-        "ORDER BY updated_at, id LIMIT 1",
+        "SELECT * FROM implementations WHERE maintainer=? "
+        "AND status IN ('draft','working','revision') "
+        "ORDER BY CASE status WHEN 'revision' THEN 0 ELSE 1 END,updated_at,id LIMIT 1",
         (maintainer_name,),
     )
     if not rows or not state.can_run():

@@ -183,6 +183,68 @@ class DiscussionTests(unittest.TestCase):
         run_step.assert_called_once()
         respond.assert_not_called()
 
+    @patch("maintainerd.discussion.review.sync_peer_once", return_value=False)
+    @patch("maintainerd.discussion.implementation.continue_one", return_value=False)
+    @patch("maintainerd.discussion.respond")
+    @patch("maintainerd.discussion.publisher.issue_thread")
+    @patch("maintainerd.discussion.publisher.session_for")
+    def test_peer_created_issue_is_visible_to_other_maintainers(
+        self, session_for, issue_thread, respond, continue_one, peer_review
+    ):
+        with self.state.db:
+            self.state.db.execute(
+                "INSERT INTO maintainers(name,repository,mission) VALUES (?,?,?)",
+                ("noah", "sdk", "Improve it independently."),
+            )
+            self.state.db.execute(
+                "INSERT INTO runs(id,maintainer,reason,status,started_at,finished_at,commit_sha,result) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    "noah-run", "noah", "exploration", "completed",
+                    "2026-01-02", "2026-01-02", "abc",
+                    json.dumps({"outcome":"no_action","summary":"x","findings":[],
+                                "inspected_paths":[],"limitations":[],"memory_notes":[]}),
+                ),
+            )
+            self.state.db.execute(
+                "INSERT INTO proposal_routes("
+                "run_id,finding_index,repository,issue_number,issue_url,title,mode,published_at"
+                ") VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    "noah-run", 0, "owner/repo", 12,
+                    "https://github.com/owner/repo/issues/12",
+                    "Peer proposal", "created", "2026-01-02",
+                ),
+            )
+        active = publisher.Session(
+            "owner/repo", "token", "mira-maintains[bot]", {"issues":"write"}
+        )
+        session_for.return_value = active
+        issue_thread.side_effect = lambda active, number: {
+            "issue": {
+                "number": number,
+                "title": "Peer proposal" if number == 12 else "Proposal",
+                "state": "open",
+                "html_url": f"https://github.com/owner/repo/issues/{number}",
+                "body": "A concrete proposal from another maintainer.",
+                "created_at": "2026-01-02",
+                "user": {
+                    "login": "noah-maintains[bot]" if number == 12 else "mira-maintains[bot]",
+                    "type": "Bot",
+                },
+            },
+            "comments": [],
+        }
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            discussion.sync_once(self.state, "mira")
+
+        calls = [call for call in respond.call_args_list if call.args[4] == 12]
+        self.assertEqual(len(calls), 1)
+        trigger = calls[0].args[5][0]
+        self.assertEqual(trigger["comment_id"], -12)
+        self.assertEqual(trigger["author"], "noah-maintains[bot]")
+
     @patch("maintainerd.discussion.codex.preflight", return_value="codex-test")
     @patch("maintainerd.discussion.codex.execute")
     @patch("maintainerd.discussion.publisher.post_comment")

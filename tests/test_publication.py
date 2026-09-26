@@ -75,8 +75,8 @@ class PublicationTests(unittest.TestCase):
 
     def test_schema_migrated_for_coordination(self):
         version = self.state.db.execute("PRAGMA user_version").fetchone()[0]
-        self.assertEqual(version, 5)
-        for table in ("proposal_routes", "thread_events", "thread_turns", "implementations", "implementation_steps"):
+        self.assertEqual(version, 6)
+        for table in ("proposal_routes", "thread_events", "thread_turns", "implementations", "implementation_steps", "review_turns", "revision_requests"):
             self.assertEqual(
                 self.state.db.execute(
                     "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", (table,)
@@ -106,6 +106,41 @@ class PublicationTests(unittest.TestCase):
         self.assertIn("No implementation has been started", body)
         self.assertIn("overlap-run=run1", overlap)
         self.assertIn("Rather than open a duplicate issue", overlap)
+
+    def test_public_issue_omits_unrelated_dedupe_mentions(self):
+        finding = {
+            **FINDING,
+            "evidence": [
+                *FINDING["evidence"],
+                "The supplied open issues #15-#24 and recent closed items contain no matching proposal.",
+            ],
+        }
+        body = publisher.issue_body("mira", "run1", "abc123", finding)
+        self.assertNotIn("#15-#24", body)
+        self.assertIn("src/hoi4/mod.py", body)
+
+    def test_symbol_fingerprint_catches_differently_worded_same_root_cause(self):
+        finding = {
+            "title": "Preserve accumulated edits when composing state-history patches",
+            "problem": "Repeated patch_state_history() calls retain only the latest serialized patch.",
+            "evidence": [
+                "src/hoi4/mod.py:3356 patch_state_history() replaces _state_history_patches.",
+                "src/hoi4/mod.py:7930 _render_dirty_files() bypasses accumulated model changes.",
+            ],
+            "proposal": "Make patch_state_history() and set_state_properties() compose in call order.",
+            "tradeoffs": "Preserve source fidelity.",
+            "questions": [],
+        }
+        existing = {
+            "title": "Compose queued state-history patches with other pending state edits",
+            "body": (
+                "src/hoi4/mod.py uses patch_state_history() and _render_dirty_files(); "
+                "set_state_properties() edits can be omitted from the final output."
+            ),
+        }
+        self.assertGreaterEqual(
+            publisher.similarity(finding, existing), publisher.OVERLAP_THRESHOLD
+        )
 
     def test_similarity_detects_same_problem_but_not_unrelated(self):
         same = {

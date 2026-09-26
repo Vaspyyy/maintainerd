@@ -93,3 +93,41 @@ def snapshot(repository: str | None, enabled: bool) -> dict:
     except (Error, AttributeError) as exc:
         limitations.append(f"CI metadata unavailable: {exc}")
     return data
+
+
+def ci_for_head(repository: str | None, head_sha: str, enabled: bool) -> dict:
+    result = {"head_sha": head_sha, "checks": [], "failed": [], "limitations": []}
+    if not enabled or not repository:
+        result["limitations"].append("CI context disabled or repository unavailable.")
+        return result
+    if not shutil.which("gh"):
+        result["limitations"].append("gh is not installed; CI status was not fetched.")
+        return result
+    env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_PAGER="cat")
+    try:
+        raw = command(
+            [
+                "gh", "api", "--hostname", "github.com", "--method", "GET",
+                f"repos/{repository}/commits/{head_sha}/check-runs?per_page=100",
+            ],
+            env=env,
+            timeout=30,
+        )
+        data = json.loads(raw)
+        checks = data.get("check_runs", []) if isinstance(data, dict) else []
+        for item in checks:
+            entry = {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "status": item.get("status"),
+                "conclusion": item.get("conclusion"),
+                "html_url": item.get("html_url"),
+            }
+            result["checks"].append(entry)
+            if entry["conclusion"] in {
+                "failure", "timed_out", "cancelled", "action_required", "startup_failure"
+            }:
+                result["failed"].append(entry)
+    except (Error, json.JSONDecodeError, AttributeError) as exc:
+        result["limitations"].append(f"CI metadata unavailable: {exc}")
+    return result
